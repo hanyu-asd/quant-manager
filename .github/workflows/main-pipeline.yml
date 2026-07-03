@@ -1,0 +1,140 @@
+name: 每日量化流水线
+
+on:
+  schedule:
+    # 工作日北京时间 18:00（UTC 10:00）
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WORK_DIR: /home/runner/work/quant-workspace
+    steps:
+      - name: 检出总控仓库
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装通用依赖
+        run: |
+          pip install tickflow tushare pandas
+
+      - name: 拉取/更新项目代码
+        run: |
+          chmod +x scripts/update_projects.sh
+          ./scripts/update_projects.sh
+
+      - name: 注入环境变量到 daily_stock_analysis
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          cp .env.example .env || true
+          echo "STOCK_LIST=${{ secrets.STOCK_LIST }}" >> .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
+          echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
+          echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}" >> .env
+          echo "ALPHASIFT_ENABLED=${{ secrets.ALPHASIFT_ENABLED || 'true' }}" >> .env
+          echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
+          echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
+          echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
+          echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
+          echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
+          echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
+
+      # ----- 阶段1: AlphaSift 选股 -----
+      - name: AlphaSift 选股
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          python main.py --mode alphasift
+        env:
+          ALPHASIFT_ENABLED: true
+
+      # ----- 阶段2: AlphaEvo 每日回测（必选） -----
+      - name: AlphaEvo 每日回测校验
+        run: |
+          cd $WORK_DIR/alphaevo
+          # 确保输入文件存在
+          if [ ! -f "$WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv" ]; then
+            echo "错误: 未找到 stock_pool_raw.csv，请检查 AlphaSift 输出"
+            exit 1
+          fi
+          # 复制输入文件到 AlphaEvo 工作目录
+          cp $WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv data/stock_pool_raw.csv
+          # 运行回测模式（仅回测，不进化）
+          python $GITHUB_WORKSPACE/scripts/run_alphaevo.py backtest \
+            --input data/stock_pool_raw.csv \
+            --output data/stock_pool_final.csv
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      # ----- 阶段3: daily_stock_analysis AI分析+推送 -----
+      - name: daily_stock_analysis 分析与推送
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          # 将 AlphaEvo 输出的最终池复制到 DSA 数据目录
+          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool_final.csv
+          python main.py --mode analysis
+
+      # ----- 阶段4: AlphaEvo 策略进化（条件触发：周五或月首） -----
+      - name: 判断是否运行 AlphaEvo 进化
+        id: check_evo
+        run: |
+          DOW=$(date +%u)   # 1-7, 5=周五
+          DOM=$(date +%d)   # 01-31
+          if [ "$DOW" = "5" ] || [ "$DOM" = "01" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_evo=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_evo=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: AlphaEvo 策略进化（条件触发）
+        if: steps.check_evo.outputs.run_evo == 'true'
+        run: |
+          cd $WORK_DIR/alphaevo
+          # 根据具体日期选择模式
+          DOM=$(date +%d)
+          if [ "$DOM" = "01" ]; then
+            MODE="optimize --full-scan"
+          else
+            MODE="evolve --method llm"
+          fi
+          python $GITHUB_WORKSPACE/scripts/run_alphaevo.py $MODE
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+
+      # ----- 归档 -----
+      - name: 归档所有结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quant-results-${{ github.run_id }}
+          path: |
+            ${{ env.WORK_DIR }}/daily_stock_analysis/data/
+            ${{ env.WORK_DIR }}/daily_stock_analysis/reports/
+            ${{ env.WORK_DIR }}/daily_stock_analysis/logs/
+            ${{ env.WORK_DIR }}/alphaevo/data/
+            ${{ env.WORK_DIR }}/alphaevo/docs/reports/
+          retention-days: 30
+
+      # ----- 告警 -----
+      - name: 异常告警（邮件）
+        if: failure()
+        run: |
+          python scripts/send_alert.py
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          ERROR_MSG: "量化流水线执行失败，请检查 Actions 日志。"
