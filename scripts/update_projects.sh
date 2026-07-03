@@ -34,4 +34,4 @@ pip install -e ".[data-yfinance]" || pip install -e "."
 
 echo "📦 安装 AlphaSift 依赖..."
 cd $WORK_DIR/alphasift
-pip install -e ".[alphasift]" || pip install -e .
+pip install -e . || pip install alphasift
