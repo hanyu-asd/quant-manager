@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 import sys
+import os
+
+# 关键：将当前工作目录（即 daily_stock_analysis 根目录）添加到 Python 模块搜索路径
+sys.path.insert(0, os.getcwd())
+
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -17,6 +22,7 @@ except ImportError as e:
     print(f"⚠️ 无法导入数据源模块: {e}")
     sys.exit(1)
 
+# 保存原始方法
 _original_tencent = TencentFetcher.get_realtime_quotes
 _original_efinance = EfinanceFetcher.get_realtime_quotes
 
