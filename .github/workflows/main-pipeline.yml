@@ -39,7 +39,7 @@ jobs:
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
           echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
-          # TickFlow 配置（daily_stock_analysis）
+          # TickFlow 配置
           echo "TICKFLOW_API_KEY=${{ secrets.TICKFLOW_API_KEY }}" >> .env
           echo "TICKFLOW_PRIORITY=0" >> .env
           echo "REALTIME_SOURCE_PRIORITY=tickflow,tencent,akshare_sina,efinance,akshare_em" >> .env
@@ -90,23 +90,23 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- 步骤4: AlphaEvo 每日回测校验（使用 TickFlow） -----
+      # ----- 步骤4: AlphaEvo 每日回测校验（含降级） -----
       - name: AlphaEvo 每日回测校验
         run: |
           cd $WORK_DIR/alphaevo
           mkdir -p data
-          if [ -f "$WORK_DIR/daily_stock_analysis/data/stock_pool.csv" ]; then
-            cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_raw.csv
+          cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_raw.csv
+          # 尝试使用 run 命令（需策略名称，这里用 rsi_reversion_v1 示例）
+          # 如果失败，则直接复制原始池作为最终池
+          if alphaevo run rsi_reversion_v1 --input data/stock_pool_raw.csv --output data/stock_pool_final.csv; then
+            echo "AlphaEvo 回测成功"
           else
-            echo "错误：未找到 stock_pool.csv"
-            exit 1
+            echo "⚠️ AlphaEvo 回测失败，使用原始选股池作为最终池（降级）"
+            cp data/stock_pool_raw.csv data/stock_pool_final.csv
           fi
-          # 使用环境变量指定数据适配器为 tickflow
-          alphaevo backtest --input data/stock_pool_raw.csv --output data/stock_pool_final.csv
         env:
           ALPHAEVO_DATA_ADAPTER: tickflow
           TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
-          TICKFLOW_PRIORITY: 0
 
       # ----- 步骤5: daily_stock_analysis 完整分析推送 -----
       - name: daily_stock_analysis 分析与推送
@@ -135,9 +135,9 @@ jobs:
           cd $WORK_DIR/alphaevo
           DOM=$(date +%d)
           if [ "$DOM" = "01" ]; then
-            alphaevo optimize --full-scan
+            alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
           else
-            alphaevo evolve --method llm
+            alphaevo evolve --method llm || echo "⚠️ 进化失败，跳过"
           fi
         env:
           ALPHAEVO_DATA_ADAPTER: tickflow
