@@ -37,10 +37,9 @@ jobs:
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
-          # 关键：自动添加 openai/ 前缀
           echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
-          # TickFlow 官方配置
+          # TickFlow 配置（daily_stock_analysis）
           echo "TICKFLOW_API_KEY=${{ secrets.TICKFLOW_API_KEY }}" >> .env
           echo "TICKFLOW_PRIORITY=0" >> .env
           echo "REALTIME_SOURCE_PRIORITY=tickflow,tencent,akshare_sina,efinance,akshare_em" >> .env
@@ -50,7 +49,7 @@ jobs:
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
           echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
 
-      # ----- 步骤1: 大盘复盘（生成今日信号） -----
+      # ----- 步骤1: 大盘复盘 -----
       - name: 大盘复盘
         run: |
           cd $WORK_DIR/daily_stock_analysis
@@ -58,7 +57,7 @@ jobs:
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 步骤2: 策略自动选择（基于今日信号） -----
+      # ----- 步骤2: 策略自动选择 -----
       - name: 策略自动选择
         id: select_strategy
         run: |
@@ -66,7 +65,7 @@ jobs:
         env:
           WORK_DIR: ${{ env.WORK_DIR }}
 
-      # ----- 步骤3: AlphaSift 选股（独立仓库） -----
+      # ----- 步骤3: AlphaSift 选股 -----
       - name: AlphaSift 选股
         run: |
           cd $WORK_DIR/alphasift
@@ -91,7 +90,7 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- 步骤4: AlphaEvo 每日回测校验 -----
+      # ----- 步骤4: AlphaEvo 每日回测校验（使用 TickFlow） -----
       - name: AlphaEvo 每日回测校验
         run: |
           cd $WORK_DIR/alphaevo
@@ -102,12 +101,12 @@ jobs:
             echo "错误：未找到 stock_pool.csv"
             exit 1
           fi
-          python $GITHUB_WORKSPACE/scripts/run_alphaevo.py backtest \
-            --input data/stock_pool_raw.csv \
-            --output data/stock_pool_final.csv
+          # 使用环境变量指定数据适配器为 tickflow
+          alphaevo backtest --input data/stock_pool_raw.csv --output data/stock_pool_final.csv
         env:
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALPHAEVO_DATA_ADAPTER: tickflow
+          TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+          TICKFLOW_PRIORITY: 0
 
       # ----- 步骤5: daily_stock_analysis 完整分析推送 -----
       - name: daily_stock_analysis 分析与推送
@@ -136,14 +135,13 @@ jobs:
           cd $WORK_DIR/alphaevo
           DOM=$(date +%d)
           if [ "$DOM" = "01" ]; then
-            MODE="optimize --full-scan"
+            alphaevo optimize --full-scan
           else
-            MODE="evolve --method llm"
+            alphaevo evolve --method llm
           fi
-          python $GITHUB_WORKSPACE/scripts/run_alphaevo.py $MODE
         env:
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALPHAEVO_DATA_ADAPTER: tickflow
+          TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
