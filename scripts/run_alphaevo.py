@@ -33,7 +33,6 @@ class FakeYFinance:
             data = tf.get_daily(symbols, start_date=start, end_date=end)
             if data is not None and not data.empty:
                 df = pd.DataFrame(data)
-                # 假定列名为: date, open, high, low, close, volume
                 df = df.rename(columns={
                     'open': 'Open', 'high': 'High', 'low': 'Low',
                     'close': 'Close', 'volume': 'Volume'
@@ -43,7 +42,6 @@ class FakeYFinance:
             pro = ts.pro_api()
             if isinstance(symbols, list):
                 symbols = ','.join(symbols)
-            # 转换日期格式
             s = start.replace('-', '') if start else None
             e = end.replace('-', '') if end else None
             df = pro.daily(ts_code=symbols, start_date=s, end_date=e)
@@ -69,26 +67,18 @@ def main():
     parser.add_argument('--output', help='输出 CSV 文件路径（backtest 模式）')
     parser.add_argument('--method', help='进化方法（evolve 模式）')
     parser.add_argument('--full-scan', action='store_true', help='全量扫描（optimize 模式）')
-    # 其他参数直接传递给 AlphaEvo
     args, unknown = parser.parse_known_args()
 
-    # 构造 AlphaEvo 命令行参数
     cmd_args = [args.mode]
     if args.mode == 'backtest':
-        # backtest 需要指定策略文件，这里假设使用默认策略，或通过配置文件
-        # 简单处理：调用 AlphaEvo 的 backtest 命令，并指定输入输出
-        # 这里我们直接调用 alphaevo run 命令，但 backtest 可能是子命令
-        # 根据 AlphaEvo 实际 CLI 调整，此处举例
         cmd_args.extend(['--input', args.input, '--output', args.output])
     elif args.mode == 'evolve':
         cmd_args.extend(['--method', args.method or 'llm'])
     elif args.mode == 'optimize':
         if args.full_scan:
             cmd_args.append('--full-scan')
-    # 添加未知参数
     cmd_args.extend(unknown)
 
-    # 替换 sys.argv
     sys.argv = ['alphaevo'] + cmd_args
     alphaevo_main()
 

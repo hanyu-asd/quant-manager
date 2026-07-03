@@ -1,8 +1,8 @@
-name: 每日量化流水线
+name: 每日量化流水线（盘后）
 
 on:
   schedule:
-    - cron: '0 10 * * 1-5'   # 工作日北京时间 18:00
+    - cron: '0 8 * * 1-5'   # 工作日北京时间 16:00（UTC 8:00）
   workflow_dispatch:
 
 jobs:
@@ -39,59 +39,64 @@ jobs:
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
           echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
-          # 明确指定数据源优先级，优先 TickFlow（免费）
           echo "DATA_SOURCE_PRIORITY=tickflow,akshare,tushare,baostock,yfinance" >> .env
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
           echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
           echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
 
-      # ----- 阶段1: AlphaSift 选股（使用 CLI 独立运行） -----
-      - name: AlphaSift 选股（生成候选池）
+      # ----- 步骤1: 大盘复盘（生成今日信号） -----
+      - name: 大盘复盘
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          # 确保 alphasift 已安装（如果项目包含，否则手动安装）
-          pip install -e ".[alphasift]" || pip install alphasift || true
-          # 运行选股策略（例如 balanced_alpha），保存结果到 data/runs/
-          alphasift screen balanced_alpha --no-llm --save-run
-          # 将最新选股结果复制为标准文件名 stock_pool.csv
-          # 假设最新文件在 data/runs/ 下，按时间排序取最新的
+          python main.py --market-review --no-notify
+        env:
+          ALPHASIFT_ENABLED: false
+
+      # ----- 步骤2: 策略自动选择（基于今日信号） -----
+      - name: 策略自动选择
+        id: select_strategy
+        run: |
+          python scripts/select_strategy.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+
+      # ----- 步骤3: AlphaSift 选股（独立仓库） -----
+      - name: AlphaSift 选股
+        run: |
+          cd $WORK_DIR/alphasift
+          # 安装 alphasift 依赖（如果尚未安装）
+          pip install -e . || true
+          # 使用选定策略进行选股
+          STRATEGY="${{ steps.select_strategy.outputs.selected_strategy }}"
+          echo "使用策略: $STRATEGY"
+          alphasift screen $STRATEGY --no-llm --save-run
+          # 复制最新选股结果到共享数据目录
+          mkdir -p $WORK_DIR/daily_stock_analysis/data
           latest_run=$(ls -t data/runs/*.csv 2>/dev/null | head -1)
           if [ -n "$latest_run" ]; then
-            cp "$latest_run" data/stock_pool.csv
-            echo "选股结果已保存为 data/stock_pool.csv"
+            cp "$latest_run" $WORK_DIR/daily_stock_analysis/data/stock_pool.csv
+            echo "选股结果已保存到 shared/stock_pool.csv"
           else
-            echo "警告：未生成选股结果，可能策略未运行成功"
+            echo "错误：未生成选股结果"
+            exit 1
           fi
         env:
-          ALPHASIFT_ENABLED: true  # 确保环境变量传递
+          ALPHASIFT_ENABLED: true
 
-      # ----- 调试: 列出数据目录 -----
-      - name: 列出数据目录内容（调试）
-        run: |
-          cd $WORK_DIR/daily_stock_analysis
-          echo "data/ 目录内容:"
-          ls -la data/ || echo "data目录不存在"
-          echo "data/runs/ 目录内容（如有）:"
-          ls -la data/runs/ 2>/dev/null || echo "data/runs/ 不存在"
-
-      # ----- 阶段2: AlphaEvo 每日回测校验 -----
+      # ----- 步骤4: AlphaEvo 每日回测校验 -----
       - name: AlphaEvo 每日回测校验
         run: |
           cd $WORK_DIR/alphaevo
           mkdir -p data
-          # 尝试多个可能的文件名，优先从 daily_stock_analysis 复制
+          # 复制共享目录的选股结果
           if [ -f "$WORK_DIR/daily_stock_analysis/data/stock_pool.csv" ]; then
             cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_raw.csv
-            echo "使用 stock_pool.csv 作为输入"
-          elif [ -f "$WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv" ]; then
-            cp $WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv data/stock_pool_raw.csv
-            echo "使用 stock_pool_raw.csv 作为输入"
           else
-            echo "错误: 未找到 stock_pool.csv 或 stock_pool_raw.csv"
+            echo "错误：未找到 stock_pool.csv"
             exit 1
           fi
-          # 运行回测模式（仅回测，不进化）
+          # 运行回测（仅回测，不进化）
           python $GITHUB_WORKSPACE/scripts/run_alphaevo.py backtest \
             --input data/stock_pool_raw.csv \
             --output data/stock_pool_final.csv
@@ -99,18 +104,18 @@ jobs:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      # ----- 阶段3: daily_stock_analysis 分析与推送（使用最终池） -----
+      # ----- 步骤5: daily_stock_analysis 完整分析推送 -----
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          # 将 AlphaEvo 输出复制到 DSA 数据目录（覆盖原文件）
-          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool.csv
-          # 关闭 AlphaSift 避免重复选股，正常分析自选股+最终池
+          # 将 AlphaEvo 输出复制到 DSA 数据目录
+          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool_final.csv
+          # 关闭 AlphaSift，避免重复选股
           python main.py
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 阶段4: AlphaEvo 策略进化（条件触发：周五或月首） -----
+      # ----- 步骤6: AlphaEvo 策略进化（条件触发：周五或月首） -----
       - name: 判断是否运行 AlphaEvo 进化
         id: check_evo
         run: |

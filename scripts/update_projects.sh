@@ -4,6 +4,7 @@ set -e
 WORK_DIR=${WORK_DIR:-/home/runner/work/quant-workspace}
 DSA_REPO="https://github.com/ZhuLinsen/daily_stock_analysis.git"
 ALPHAEVO_REPO="https://github.com/ZhuLinsen/alphaevo.git"
+ALPHASIFT_REPO="https://github.com/ZhuLinsen/alphasift.git"
 
 mkdir -p $WORK_DIR
 
@@ -21,6 +22,7 @@ clone_or_pull() {
 
 clone_or_pull $DSA_REPO "$WORK_DIR/daily_stock_analysis"
 clone_or_pull $ALPHAEVO_REPO "$WORK_DIR/alphaevo"
+clone_or_pull $ALPHASIFT_REPO "$WORK_DIR/alphasift"
 
 echo "📦 安装 daily_stock_analysis 依赖..."
 cd $WORK_DIR/daily_stock_analysis
@@ -29,3 +31,7 @@ pip install -r requirements.txt
 echo "📦 安装 AlphaEvo 依赖..."
 cd $WORK_DIR/alphaevo
 pip install -e ".[data-yfinance]" || pip install -e "."
+
+echo "📦 安装 AlphaSift 依赖..."
+cd $WORK_DIR/alphasift
+pip install -e ".[alphasift]" || pip install -e .
