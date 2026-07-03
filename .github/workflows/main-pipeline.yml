@@ -43,7 +43,6 @@ jobs:
           echo "TICKFLOW_PRIORITY=0" >> .env
           echo "AKSHARE_PRIORITY=1" >> .env
           echo "TUSHARE_PRIORITY=2" >> .env
-          # 保留 DATA_SOURCE_PRIORITY 作为备选（项目可能仍会读取）
           echo "DATA_SOURCE_PRIORITY=tickflow,akshare,tushare,baostock,yfinance" >> .env
           # =============================
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
@@ -75,13 +74,20 @@ jobs:
           STRATEGY="${{ steps.select_strategy.outputs.selected_strategy }}"
           echo "使用策略: $STRATEGY"
           alphasift screen $STRATEGY --no-llm --save-run
+          # 找到最新生成的 JSON 结果
+          latest_json=$(ls -t data/runs/*.json 2>/dev/null | head -1)
+          if [ -z "$latest_json" ]; then
+            echo "错误：未生成选股结果 JSON"
+            exit 1
+          fi
+          echo "选股结果 JSON: $latest_json"
+          # 使用转换脚本生成 CSV
           mkdir -p $WORK_DIR/daily_stock_analysis/data
-          latest_run=$(ls -t data/runs/*.csv 2>/dev/null | head -1)
-          if [ -n "$latest_run" ]; then
-            cp "$latest_run" $WORK_DIR/daily_stock_analysis/data/stock_pool.csv
+          python $GITHUB_WORKSPACE/scripts/convert_alphasift_json_to_csv.py "$latest_json" $WORK_DIR/daily_stock_analysis/data/stock_pool.csv
+          if [ $? -eq 0 ]; then
             echo "选股结果已保存到 shared/stock_pool.csv"
           else
-            echo "错误：未生成选股结果"
+            echo "错误：转换 CSV 失败"
             exit 1
           fi
         env:
