@@ -2,9 +2,8 @@ name: 每日量化流水线
 
 on:
   schedule:
-    # 工作日北京时间 18:00（UTC 10:00）
-    - cron: '0 10 * * 1-5'
-  workflow_dispatch:  # 手动触发
+    - cron: '0 10 * * 1-5'   # 工作日北京时间 18:00
+  workflow_dispatch:
 
 jobs:
   pipeline:
@@ -20,6 +19,7 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+          # cache: pip  # 已移除，避免因根目录无 requirements.txt 报错
 
       - name: 安装通用依赖
         run: |
@@ -39,7 +39,6 @@ jobs:
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
           echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}" >> .env
-          echo "ALPHASIFT_ENABLED=${{ secrets.ALPHASIFT_ENABLED || 'true' }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
           echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
@@ -47,25 +46,26 @@ jobs:
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
           echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
 
-      # ----- 阶段1: AlphaSift 选股 -----
+      # ----- 阶段1: AlphaSift 选股（生成候选池，不发送邮件） -----
       - name: AlphaSift 选股
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          python main.py --mode alphasift
+          python main.py --no-notify
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- 阶段2: AlphaEvo 每日回测（必选） -----
+      # ----- 阶段2: AlphaEvo 每日回测校验 -----
       - name: AlphaEvo 每日回测校验
         run: |
           cd $WORK_DIR/alphaevo
-          # 确保输入文件存在
-          if [ ! -f "$WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv" ]; then
+          mkdir -p data
+          # 复制候选池
+          if [ -f "$WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv" ]; then
+            cp $WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv data/stock_pool_raw.csv
+          else
             echo "错误: 未找到 stock_pool_raw.csv，请检查 AlphaSift 输出"
             exit 1
           fi
-          # 复制输入文件到 AlphaEvo 工作目录
-          cp $WORK_DIR/daily_stock_analysis/data/stock_pool_raw.csv data/stock_pool_raw.csv
           # 运行回测模式（仅回测，不进化）
           python $GITHUB_WORKSPACE/scripts/run_alphaevo.py backtest \
             --input data/stock_pool_raw.csv \
@@ -74,20 +74,24 @@ jobs:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      # ----- 阶段3: daily_stock_analysis AI分析+推送 -----
+      # ----- 阶段3: daily_stock_analysis 分析与推送（使用最终池） -----
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          # 将 AlphaEvo 输出的最终池复制到 DSA 数据目录
-          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool_final.csv
-          python main.py --mode analysis
+          # 将 AlphaEvo 输出覆盖 DSA 的数据文件（假设它读取 data/stock_pool.csv）
+          # 如果 DSA 读取的是其他文件名，请相应调整
+          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool.csv
+          # 关闭 AlphaSift 避免重复选股，正常发送邮件
+          python main.py
+        env:
+          ALPHASIFT_ENABLED: false
 
-      # ----- 阶段4: AlphaEvo 策略进化（条件触发：周五或月首） -----
+      # ----- 阶段4: AlphaEvo 策略进化（条件触发） -----
       - name: 判断是否运行 AlphaEvo 进化
         id: check_evo
         run: |
-          DOW=$(date +%u)   # 1-7, 5=周五
-          DOM=$(date +%d)   # 01-31
+          DOW=$(date +%u)
+          DOM=$(date +%d)
           if [ "$DOW" = "5" ] || [ "$DOM" = "01" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run_evo=true" >> $GITHUB_OUTPUT
           else
@@ -98,7 +102,6 @@ jobs:
         if: steps.check_evo.outputs.run_evo == 'true'
         run: |
           cd $WORK_DIR/alphaevo
-          # 根据具体日期选择模式
           DOM=$(date +%d)
           if [ "$DOM" = "01" ]; then
             MODE="optimize --full-scan"
