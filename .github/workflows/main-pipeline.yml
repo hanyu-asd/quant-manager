@@ -88,6 +88,12 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
+      # ===== 为 AlphaEvo 打 yfinance 补丁（使其使用 TickFlow） =====
+      - name: 应用 AlphaEvo yfinance 补丁（使用 TickFlow）
+        run: |
+          cd $WORK_DIR/alphaevo
+          python $GITHUB_WORKSPACE/scripts/patch_alphaevo_yfinance.py
+
       - name: AlphaEvo 每日回测校验
         run: |
           cd $WORK_DIR/alphaevo
@@ -99,8 +105,7 @@ jobs:
             echo "⚠️ AlphaEvo 回测失败，使用原始选股池作为最终池（降级）"
             cp data/stock_pool_raw.csv data/stock_pool_final.csv
           fi
-        env:
-          ALPHAEVO_DATA_ADAPTER: tickflow
+        env: {}
 
       - name: 应用 TickFlow 补丁（完整分析）
         run: |
@@ -126,6 +131,13 @@ jobs:
             echo "run_evo=false" >> $GITHUB_OUTPUT
           fi
 
+      # 为 AlphaEvo 进化也应用补丁（补丁是全局的，但为了确保，再执行一次）
+      - name: 应用 AlphaEvo yfinance 补丁（进化使用）
+        if: steps.check_evo.outputs.run_evo == 'true'
+        run: |
+          cd $WORK_DIR/alphaevo
+          python $GITHUB_WORKSPACE/scripts/patch_alphaevo_yfinance.py
+
       - name: AlphaEvo 策略进化（条件触发）
         if: steps.check_evo.outputs.run_evo == 'true'
         run: |
@@ -137,7 +149,6 @@ jobs:
             alphaevo evolve rsi_reversion_v1 --method llm || echo "⚠️ 进化失败，跳过"
           fi
         env:
-          ALPHAEVO_DATA_ADAPTER: tickflow
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
