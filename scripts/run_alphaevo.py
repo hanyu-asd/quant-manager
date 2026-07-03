@@ -5,7 +5,6 @@ AlphaEvo 包装脚本：支持 backtest / evolve / optimize 模式
 """
 import sys
 import os
-import argparse
 import pandas as pd
 
 # ----- 数据源适配层 -----
@@ -56,31 +55,36 @@ class FakeYFinance:
 # 替换 yfinance
 sys.modules['yfinance'] = FakeYFinance
 
-# ----- 导入 AlphaEvo 核心 -----
-from alphaevo.cli import main as alphaevo_main
+# ----- 导入 AlphaEvo 并调用入口函数 -----
+def run_alphaevo():
+    # 尝试多种常见的入口点
+    candidates = [
+        ('alphaevo.cli', 'main'),
+        ('alphaevo.cli', 'cli'),
+        ('alphaevo', 'main'),
+        ('alphaevo.__main__', 'main'),
+    ]
+    for module_name, func_name in candidates:
+        try:
+            mod = __import__(module_name, fromlist=[func_name])
+            func = getattr(mod, func_name, None)
+            if callable(func):
+                func()
+                return
+        except (ImportError, AttributeError):
+            continue
 
-def main():
-    parser = argparse.ArgumentParser(description="AlphaEvo 包装运行器")
-    parser.add_argument('mode', choices=['backtest', 'evolve', 'optimize'],
-                        help='运行模式')
-    parser.add_argument('--input', help='输入 CSV 文件路径（backtest 模式）')
-    parser.add_argument('--output', help='输出 CSV 文件路径（backtest 模式）')
-    parser.add_argument('--method', help='进化方法（evolve 模式）')
-    parser.add_argument('--full-scan', action='store_true', help='全量扫描（optimize 模式）')
-    args, unknown = parser.parse_known_args()
+    # 如果都不行，尝试直接调用 alphaevo 包（可能作为脚本）
+    try:
+        import alphaevo
+        if hasattr(alphaevo, '__main__') and callable(alphaevo.__main__):
+            alphaevo.__main__()
+            return
+    except AttributeError:
+        pass
 
-    cmd_args = [args.mode]
-    if args.mode == 'backtest':
-        cmd_args.extend(['--input', args.input, '--output', args.output])
-    elif args.mode == 'evolve':
-        cmd_args.extend(['--method', args.method or 'llm'])
-    elif args.mode == 'optimize':
-        if args.full_scan:
-            cmd_args.append('--full-scan')
-    cmd_args.extend(unknown)
-
-    sys.argv = ['alphaevo'] + cmd_args
-    alphaevo_main()
+    raise RuntimeError("无法找到 AlphaEvo 的入口函数，请检查安装")
 
 if __name__ == "__main__":
-    main()
+    # 保留原始命令行参数，交给入口函数处理
+    run_alphaevo()
