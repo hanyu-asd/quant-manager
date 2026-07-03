@@ -37,14 +37,14 @@ jobs:
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
-          echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}" >> .env
+          # 关键：自动添加 openai/ 前缀
+          echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
-          # ===== 新增：TickFlow 优先 =====
+          # TickFlow 官方配置
+          echo "TICKFLOW_API_KEY=${{ secrets.TICKFLOW_API_KEY }}" >> .env
           echo "TICKFLOW_PRIORITY=0" >> .env
-          echo "AKSHARE_PRIORITY=1" >> .env
-          echo "TUSHARE_PRIORITY=2" >> .env
-          echo "DATA_SOURCE_PRIORITY=tickflow,akshare,tushare,baostock,yfinance" >> .env
-          # =============================
+          echo "REALTIME_SOURCE_PRIORITY=tickflow,tencent,akshare_sina,efinance,akshare_em" >> .env
+          echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
           echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
@@ -74,14 +74,12 @@ jobs:
           STRATEGY="${{ steps.select_strategy.outputs.selected_strategy }}"
           echo "使用策略: $STRATEGY"
           alphasift screen $STRATEGY --no-llm --save-run
-          # 找到最新生成的 JSON 结果
           latest_json=$(ls -t data/runs/*.json 2>/dev/null | head -1)
           if [ -z "$latest_json" ]; then
             echo "错误：未生成选股结果 JSON"
             exit 1
           fi
           echo "选股结果 JSON: $latest_json"
-          # 使用转换脚本生成 CSV
           mkdir -p $WORK_DIR/daily_stock_analysis/data
           python $GITHUB_WORKSPACE/scripts/convert_alphasift_json_to_csv.py "$latest_json" $WORK_DIR/daily_stock_analysis/data/stock_pool.csv
           if [ $? -eq 0 ]; then
