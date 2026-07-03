@@ -9,14 +9,12 @@ ALPHASIFT_REPO="https://github.com/ZhuLinsen/alphasift.git"
 mkdir -p $WORK_DIR
 
 clone_or_pull() {
-    local repo_url=$1
-    local target_dir=$2
-    if [ -d "$target_dir/.git" ]; then
-        echo "🔄 更新 $target_dir ..."
-        cd $target_dir && git pull
+    if [ -d "$2/.git" ]; then
+        echo "🔄 更新 $2 ..."
+        cd $2 && git pull
     else
-        echo "📦 克隆 $target_dir ..."
-        git clone --depth 1 $repo_url $target_dir
+        echo "📦 克隆 $2 ..."
+        git clone --depth 1 $1 $2
     fi
 }
 
@@ -24,14 +22,6 @@ clone_or_pull $DSA_REPO "$WORK_DIR/daily_stock_analysis"
 clone_or_pull $ALPHAEVO_REPO "$WORK_DIR/alphaevo"
 clone_or_pull $ALPHASIFT_REPO "$WORK_DIR/alphasift"
 
-echo "📦 安装 daily_stock_analysis 依赖..."
-cd $WORK_DIR/daily_stock_analysis
-pip install -r requirements.txt
-
-echo "📦 安装 AlphaEvo 依赖..."
-cd $WORK_DIR/alphaevo
-pip install -e ".[data-yfinance]" || pip install -e "."
-
-echo "📦 安装 AlphaSift 依赖..."
-cd $WORK_DIR/alphasift
-pip install -e . || pip install alphasift
+cd $WORK_DIR/daily_stock_analysis && pip install -r requirements.txt
+cd $WORK_DIR/alphaevo && pip install -e ".[data-yfinance]" || pip install -e .
+cd $WORK_DIR/alphasift && pip install -e . || pip install alphasift

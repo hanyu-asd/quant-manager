@@ -8,7 +8,7 @@ def send_alert(subject, content):
     password = os.getenv("EMAIL_PASSWORD")
     receivers = os.getenv("EMAIL_RECEIVERS", "").split(',')
     if not sender or not password or not receivers:
-        print("邮件配置缺失，无法发送告警")
+        print("邮件配置缺失")
         return
     msg = MIMEText(content, 'plain', 'utf-8')
     msg['Subject'] = subject
@@ -20,8 +20,8 @@ def send_alert(subject, content):
             server.send_message(msg)
         print("告警邮件已发送")
     except Exception as e:
-        print(f"发送告警失败: {e}")
+        print(f"发送失败: {e}")
 
 if __name__ == "__main__":
-    error_msg = os.getenv("ERROR_MSG", "量化流水线执行失败，请检查日志。")
-    send_alert("量化系统告警", error_msg)
+    error = os.getenv("ERROR_MSG", "流水线执行失败")
+    send_alert("量化系统告警", error)

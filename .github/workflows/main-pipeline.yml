@@ -37,7 +37,6 @@ jobs:
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
-          # 自动添加 openai/ 前缀
           echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
           echo "DATA_SOURCE_PRIORITY=tickflow,akshare,tushare,baostock,yfinance" >> .env
@@ -46,21 +45,18 @@ jobs:
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
           echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
 
-      # ----- 步骤1: 应用 TickFlow 补丁（大盘复盘） -----
-      - name: 应用 TickFlow 补丁
+      - name: 应用 TickFlow 补丁（大盘复盘）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
 
-      # ----- 步骤2: 大盘复盘（生成今日信号） -----
-      - name: 大盘复盘
+      - name: 大盘复盘（生成今日信号）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python main.py --market-review --no-notify
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 步骤3: 策略自动选择（基于今日信号） -----
       - name: 策略自动选择
         id: select_strategy
         run: |
@@ -68,7 +64,6 @@ jobs:
         env:
           WORK_DIR: ${{ env.WORK_DIR }}
 
-      # ----- 步骤4: AlphaSift 选股（独立仓库） -----
       - name: AlphaSift 选股
         run: |
           cd $WORK_DIR/alphasift
@@ -93,13 +88,12 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- 步骤5: AlphaEvo 每日回测校验（含降级） -----
       - name: AlphaEvo 每日回测校验
         run: |
           cd $WORK_DIR/alphaevo
           mkdir -p data
           cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_raw.csv
-          if alphaevo run rsi_reversion_v1 --input data/stock_pool_raw.csv --output data/stock_pool_final.csv 2>/dev/null; then
+          if alphaevo run rsi_reversion_v1 --output data/stock_pool_final.csv 2>/dev/null; then
             echo "AlphaEvo 回测成功"
           else
             echo "⚠️ AlphaEvo 回测失败，使用原始选股池作为最终池（降级）"
@@ -108,13 +102,11 @@ jobs:
         env:
           ALPHAEVO_DATA_ADAPTER: tickflow
 
-      # ----- 步骤6: 应用 TickFlow 补丁（完整分析） -----
-      - name: 应用 TickFlow 补丁（供完整分析使用）
+      - name: 应用 TickFlow 补丁（完整分析）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
 
-      # ----- 步骤7: daily_stock_analysis 完整分析推送 -----
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
@@ -123,7 +115,6 @@ jobs:
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 步骤8: AlphaEvo 策略进化（条件触发） -----
       - name: 判断是否运行 AlphaEvo 进化
         id: check_evo
         run: |
@@ -143,7 +134,7 @@ jobs:
           if [ "$DOM" = "01" ]; then
             alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
           else
-            alphaevo evolve --method llm || echo "⚠️ 进化失败，跳过"
+            alphaevo evolve rsi_reversion_v1 --method llm || echo "⚠️ 进化失败，跳过"
           fi
         env:
           ALPHAEVO_DATA_ADAPTER: tickflow
@@ -151,7 +142,6 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
 
-      # ----- 归档 -----
       - name: 归档所有结果
         if: always()
         uses: actions/upload-artifact@v4
@@ -165,7 +155,6 @@ jobs:
             ${{ env.WORK_DIR }}/alphaevo/docs/reports/
           retention-days: 30
 
-      # ----- 告警 -----
       - name: 异常告警（邮件）
         if: failure()
         run: |

@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-将 AlphaSift 输出的 JSON 选股结果转换为 CSV 格式
-"""
 import json
 import csv
 import sys
@@ -9,17 +6,14 @@ import os
 import glob
 
 def get_latest_json(directory):
-    json_files = glob.glob(os.path.join(directory, "*.json"))
-    if not json_files:
-        return None
-    return max(json_files, key=os.path.getctime)
+    files = glob.glob(os.path.join(directory, "*.json"))
+    return max(files, key=os.path.getctime) if files else None
 
-def convert_json_to_csv(json_path, csv_path):
+def convert(json_path, csv_path):
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     picks = data.get('picks', [])
     if not picks:
-        print("警告: JSON 中没有选股结果")
         return False
     rows = []
     for item in picks:
@@ -39,22 +33,21 @@ def convert_json_to_csv(json_path, csv_path):
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    print(f"成功转换 {len(rows)} 条选股结果到 {csv_path}")
+    print(f"✅ 转换成功: {len(rows)} 条记录 → {csv_path}")
     return True
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python convert_alphasift_json_to_csv.py <json_file_or_directory> [output_csv]")
+        print("用法: python convert_alphasift_json_to_csv.py <json_file_or_dir> [output_csv]")
         sys.exit(1)
     input_path = sys.argv[1]
-    output_csv = sys.argv[2] if len(sys.argv) > 2 else "stock_pool.csv"
+    output = sys.argv[2] if len(sys.argv) > 2 else "stock_pool.csv"
     if os.path.isdir(input_path):
         json_file = get_latest_json(input_path)
         if not json_file:
-            print(f"错误: 在 {input_path} 中未找到 JSON 文件")
+            print("错误: 未找到 JSON 文件")
             sys.exit(1)
-        print(f"使用最新 JSON: {json_file}")
     else:
         json_file = input_path
-    success = convert_json_to_csv(json_file, output_csv)
+    success = convert(json_file, output)
     sys.exit(0 if success else 1)
