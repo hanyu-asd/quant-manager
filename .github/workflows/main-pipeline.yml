@@ -98,9 +98,11 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ========== 修改点：AlphaEvo 回测，优先使用 dsa 适配器 ==========
+      # ========== 修改点：AlphaEvo 回测，优先使用 dsa 适配器，并配置 DSA 路径 ==========
       - name: AlphaEvo 回测验证
         id: alphaevo_backtest
+        env:
+          ALPHAEVO_DSA_PATH: ${{ env.WORK_DIR }}/daily_stock_analysis/data/cache
         run: |
           cd $WORK_DIR/alphaevo
           mkdir -p data reports
