@@ -31,12 +31,12 @@ def get_stock_pool():
 
 def get_latest_close(symbol):
     """获取最新收盘价，优先 TickFlow，降级 Tushare"""
-    # 尝试 TickFlow
+    # 尝试 TickFlow 免费接口（正确用法：tf.free().klines.get()）
     try:
         import tickflow as tf
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
-        df = tf.get_daily(symbol, start_date=start_date, end_date=end_date)
+        df = tf.free().klines.get(symbol, start_date=start_date, end_date=end_date)
         if df is not None and not df.empty:
             return df.iloc[-1]['close']
     except Exception as e:
@@ -48,14 +48,14 @@ def get_latest_close(symbol):
             import tushare as ts
             ts.set_token(TUSHARE_TOKEN)
             pro = ts.pro_api()
-            # 转换代码格式
-            if symbol.isdigit():
-                if symbol.startswith('6'):
-                    code = f"{symbol}.SH"
+            symbol_str = str(symbol)
+            if symbol_str.isdigit():
+                if symbol_str.startswith('6'):
+                    code = f"{symbol_str}.SH"
                 else:
-                    code = f"{symbol}.SZ"
+                    code = f"{symbol_str}.SZ"
             else:
-                code = symbol
+                code = symbol_str
             df = pro.daily(ts_code=code, start_date=(datetime.now()-timedelta(days=3)).strftime('%Y%m%d'),
                            end_date=datetime.now().strftime('%Y%m%d'))
             if df is not None and not df.empty:
@@ -70,7 +70,7 @@ def calculate_support_resistance(symbol, lookback=60):
         import tickflow as tf
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=lookback)).strftime('%Y-%m-%d')
-        df = tf.get_daily(symbol, start_date=start_date, end_date=end_date)
+        df = tf.free().klines.get(symbol, start_date=start_date, end_date=end_date)
         if df is None or df.empty:
             return None, None
         recent_high = df['high'].max()
