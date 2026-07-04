@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 解析 AlphaEvo 回测报告，提取绩效指标
-支持 Markdown 纯文本和表格两种格式
+支持 Markdown 加粗文本和表格两种格式，合并提取结果
 如果报告存在但解析失败，生成默认成功绩效（避免误判为失败）
 如果找不到报告，生成保守默认绩效并标记失败
 """
@@ -27,7 +27,6 @@ def parse_report(report_path):
     with open(report_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 调试输出（便于排查）
     print("=== 报告前 200 字符 ===")
     print(content[:200])
     print("======================")
@@ -45,8 +44,7 @@ def parse_report(report_path):
         'Confidence Score': 'confidence_score'
     }
 
-    # 1. 先尝试从 Markdown 加粗文本中提取（如 **Confidence Score**: 13.0%）
-    # 匹配模式：**Key**: Value 或 **Key** : Value
+    # 1. 尝试从 Markdown 加粗文本中提取（**Key**: Value）
     md_pattern = r'\*\*([^*]+)\*\*\s*:\s*([\d.-]+%?)'
     md_matches = re.findall(md_pattern, content)
     for key, value in md_matches:
@@ -60,30 +58,39 @@ def parse_report(report_path):
             except ValueError:
                 pass
 
-    # 2. 如果 MD 方式没有提取到任何指标，尝试按行解析表格（原有逻辑）
-    if not metrics:
-        print("⚠️ MD 解析无结果，尝试按行解析表格...")
-        lines = content.splitlines()
-        for line in lines:
-            # 只处理包含数据分隔符 '┃' 的行，排除表头和边框行
-            if '┃' in line and not any(c in line for c in ['━', '┏', '┓', '┗', '┛', '┡', '┢', '┣', '┫']):
-                parts = [p.strip() for p in line.split('┃') if p.strip()]
-                if len(parts) >= 2:
-                    key = parts[0]
-                    value = parts[1]
-                    if key in mapping:
-                        try:
-                            if value.endswith('%'):
-                                metrics[key] = float(value.rstrip('%')) / 100
-                            else:
-                                metrics[key] = float(value)
-                        except ValueError:
-                            pass
+    print(f"🔍 MD 解析后已提取: {list(metrics.keys())}")
 
-    # 3. 如果仍未提取到，但报告中有 Confidence Score（单独出现），
-    #    可以尝试再次用更宽泛的模式抓取（但上面 MD 已覆盖）
-    if not metrics:
-        # 尝试直接搜索常见的数字模式（备选）
+    # 2. 从表格中提取（含 ┃ 的行）
+    table_lines = []
+    for line in content.splitlines():
+        if '┃' in line and not any(c in line for c in ['━', '┏', '┓', '┗', '┛', '┡', '┢', '┣', '┫']):
+            table_lines.append(line)
+
+    if table_lines:
+        print(f"🔍 找到 {len(table_lines)} 行表格数据")
+        for line in table_lines:
+            parts = [p.strip() for p in line.split('┃') if p.strip()]
+            if len(parts) >= 2:
+                key = parts[0]
+                value = parts[1]
+                if key in mapping:
+                    try:
+                        if value.endswith('%'):
+                            val = float(value.rstrip('%')) / 100
+                        else:
+                            val = float(value)
+                        # 若该指标尚未从 MD 提取，或表格值更可靠，则覆盖
+                        if key not in metrics or key in ['Win Rate', 'Avg Return', 'Total Return', 'Confidence Score']:
+                            metrics[key] = val
+                    except ValueError:
+                        pass
+    else:
+        print("⚠️ 未找到表格数据行")
+
+    print(f"🔍 合并后提取指标: {list(metrics.keys())}")
+
+    # 3. 如果仍未提取到核心指标，尝试宽松正则（备选）
+    if not metrics or len(metrics) < 3:
         fallback_patterns = {
             'Confidence Score': r'Confidence Score[：:]\s*([\d.]+)%',
             'Win Rate': r'Win Rate[：:]\s*([\d.]+)%',
@@ -91,16 +98,18 @@ def parse_report(report_path):
             'Total Signals': r'Total Signals[：:]\s*(\d+)',
         }
         for key, pat in fallback_patterns.items():
-            match = re.search(pat, content)
-            if match:
-                val_str = match.group(1)
-                try:
-                    if '%' in val_str or key in ['Confidence Score', 'Win Rate', 'Avg Return']:
-                        metrics[key] = float(val_str) / 100
-                    else:
-                        metrics[key] = float(val_str)
-                except ValueError:
-                    pass
+            if key not in metrics:
+                match = re.search(pat, content)
+                if match:
+                    val_str = match.group(1)
+                    try:
+                        if '%' in val_str or key in ['Confidence Score', 'Win Rate', 'Avg Return']:
+                            metrics[key] = float(val_str) / 100
+                        else:
+                            metrics[key] = float(val_str)
+                    except ValueError:
+                        pass
+        print(f"🔍 备选正则后指标: {list(metrics.keys())}")
 
     # 标准化字段名
     standardized = {}
@@ -111,7 +120,7 @@ def parse_report(report_path):
     if not standardized:
         print("⚠️ 所有解析方式均未提取到指标")
     else:
-        print(f"✅ 成功提取指标: {list(standardized.keys())}")
+        print(f"✅ 最终提取指标: {list(standardized.keys())}")
 
     return standardized
 
