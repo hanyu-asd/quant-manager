@@ -31,11 +31,11 @@ def get_stock_pool():
 
 def get_latest_close(symbol):
     """获取最新收盘价，优先 TickFlow，降级 Tushare"""
-    # 尝试 TickFlow（正确用法：TickFlow.free().klines.get）
+    # ✅ 修正：使用正确的导入和调用方式
     try:
         from tickflow import TickFlow
         tf = TickFlow.free()
-        # 获取最近5个交易日，确保获取最新价格
+        # 获取最近 5 个交易日，确保获取最新价格
         df = tf.klines.get(symbol=symbol, period="1d", count=5, as_dataframe=True)
         if df is not None and not df.empty:
             df = df.sort_values('trade_date')
@@ -67,6 +67,7 @@ def get_latest_close(symbol):
 
 def calculate_support_resistance(symbol, lookback=60):
     """计算支撑/压力位（TickFlow）"""
+    # ✅ 修正：使用正确的导入和调用方式
     try:
         from tickflow import TickFlow
         tf = TickFlow.free()
