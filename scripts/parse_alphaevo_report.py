@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 解析 AlphaEvo 回测报告，提取绩效指标
-采用直接字段匹配，不依赖表格格式
+支持 Markdown 加粗文本（**字段名**）和表格两种格式
 """
 import os
 import json
@@ -30,17 +30,17 @@ def parse_report(report_path):
     print("======================")
 
     # 定义所有需要提取的指标及其正则模式
-    # 匹配格式：字段名后跟中文或英文冒号、竖线，再跟数值（带 % 或纯数字）
+    # 字段名前后允许可选的 Markdown 加粗星号（**），同时支持多种分隔符
     patterns = {
-        'win_rate': r'Win Rate\s*[：:│┃|]\s*([\d.]+)%',
-        'avg_return': r'Avg Return\s*[：:│┃|]\s*([\d.-]+)%',
-        'pl_ratio': r'P/L Ratio\s*[：:│┃|]\s*([\d.]+)',
-        'max_drawdown': r'Max Drawdown\s*[：:│┃|]\s*([\d.]+)%',
-        'sharpe_ratio': r'Sharpe Ratio\s*[：:│┃|]\s*([\d.-]+)',
-        'total_signals': r'Total Signals\s*[：:│┃|]\s*(\d+)',
-        'avg_holding_days': r'Avg Holding Days\s*[：:│┃|]\s*([\d.]+)',
-        'total_return': r'Total Return\s*[：:│┃|]\s*([\d.-]+)%',
-        'confidence_score': r'Confidence Score\s*[：:│┃|]\s*([\d.]+)%',
+        'win_rate': r'(?:\*\*)?Win Rate(?:\*\*)?\s*[：:│┃|]\s*([\d.]+)%',
+        'avg_return': r'(?:\*\*)?Avg Return(?:\*\*)?\s*[：:│┃|]\s*([\d.-]+)%',
+        'pl_ratio': r'(?:\*\*)?P/L Ratio(?:\*\*)?\s*[：:│┃|]\s*([\d.]+)',
+        'max_drawdown': r'(?:\*\*)?Max Drawdown(?:\*\*)?\s*[：:│┃|]\s*([\d.]+)%',
+        'sharpe_ratio': r'(?:\*\*)?Sharpe Ratio(?:\*\*)?\s*[：:│┃|]\s*([\d.-]+)',
+        'total_signals': r'(?:\*\*)?Total Signals(?:\*\*)?\s*[：:│┃|]\s*(\d+)',
+        'avg_holding_days': r'(?:\*\*)?Avg Holding Days(?:\*\*)?\s*[：:│┃|]\s*([\d.]+)',
+        'total_return': r'(?:\*\*)?Total Return(?:\*\*)?\s*[：:│┃|]\s*([\d.-]+)%',
+        'confidence_score': r'(?:\*\*)?Confidence Score(?:\*\*)?\s*[：:│┃|]\s*([\d.]+)%',
     }
 
     metrics = {}
