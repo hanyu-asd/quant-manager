@@ -31,13 +31,14 @@ def get_stock_pool():
 
 def get_latest_close(symbol):
     """获取最新收盘价，优先 TickFlow，降级 Tushare"""
-    # 尝试 TickFlow 免费接口（正确用法：tf.free().klines.get()）
+    # 尝试 TickFlow（正确用法：TickFlow.free().klines.get）
     try:
-        import tickflow as tf
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
-        df = tf.free().klines.get(symbol, start_date=start_date, end_date=end_date)
+        from tickflow import TickFlow
+        tf = TickFlow.free()
+        # 获取最近5个交易日，确保获取最新价格
+        df = tf.klines.get(symbol=symbol, period="1d", count=5, as_dataframe=True)
         if df is not None and not df.empty:
+            df = df.sort_values('trade_date')
             return df.iloc[-1]['close']
     except Exception as e:
         print(f"⚠️ TickFlow 获取 {symbol} 收盘价失败: {e}")
@@ -67,12 +68,12 @@ def get_latest_close(symbol):
 def calculate_support_resistance(symbol, lookback=60):
     """计算支撑/压力位（TickFlow）"""
     try:
-        import tickflow as tf
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=lookback)).strftime('%Y-%m-%d')
-        df = tf.free().klines.get(symbol, start_date=start_date, end_date=end_date)
+        from tickflow import TickFlow
+        tf = TickFlow.free()
+        df = tf.klines.get(symbol=symbol, period="1d", count=lookback, as_dataframe=True)
         if df is None or df.empty:
             return None, None
+        df = df.sort_values('trade_date')
         recent_high = df['high'].max()
         recent_low = df['low'].min()
         return recent_high, recent_low
