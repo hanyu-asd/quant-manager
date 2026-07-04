@@ -1,220 +1,217 @@
-name: 每日选股与分析
+name: 每日量化流水线（盘后）
 
 on:
   schedule:
-    - cron: '30 10 * * 1-5'
+    - cron: '0 8 * * 1-5'   # 工作日北京时间 16:00（UTC 8:00）
   workflow_dispatch:
-    inputs:
-      strategy:
-        description: '指定策略名（不填则自动选择）'
-        required: false
-        type: string
-        default: ''
-      dry_run:
-        description: '试运行模式（不发送邮件）'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
-  daily:
+  pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
-    permissions:
-      contents: read
-      actions: read
-
+    timeout-minutes: 45
+    env:
+      WORK_DIR: /home/runner/work/quant-workspace
+      REGISTRY_PATH: /home/runner/work/quant-workspace/strategy_registry.json
     steps:
-      - name: 禁用 Git 符号链接
-        run: git config --global core.symlinks false
+      - name: 检出总控仓库
+        uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: 设置 Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
-      - name: Install dependencies
+      - name: 安装通用依赖
         run: |
-          pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-          pip config set global.timeout 120
-          pip config set global.retries 5
-          
-          cd daily_stock_analysis
-          pip install -r requirements.txt
-          pip install -e .
-          pip install fake_useragent sqlalchemy pyyaml
-          cd ../alphasift
-          pip install -e .
-          cd ../alphaevo
-          pip install -e .
-          pip install requests baostock akshare pandas numpy tushare tickflow zzshare
+          pip install tickflow tushare pandas pyyaml
 
-      - name: 动态主线识别 + 策略选择
-        id: mainline_strategy
+      - name: 拉取/更新项目代码
         run: |
-          cd ${{ github.workspace }}
-          if [ -n "${{ github.event.inputs.strategy }}" ]; then
-            echo "${{ github.event.inputs.strategy }}" > selected_strategy.txt
-            echo "SELECTED_STRATEGY=${{ github.event.inputs.strategy }}" >> $GITHUB_ENV
-            echo "📊 使用指定策略: ${{ github.event.inputs.strategy }}"
-          else
-            python scripts/select_strategy.py
-            STRATEGY=$(cat selected_strategy.txt)
-            echo "SELECTED_STRATEGY=$STRATEGY" >> $GITHUB_ENV
-            echo "📊 选定策略: $STRATEGY"
-          fi
-          if [ -f "market_state.json" ]; then
-            mkdir -p daily_stock_analysis/reports/
-            cp market_state.json daily_stock_analysis/reports/market_state.json
-            echo "✅ 市场状态已同步"
+          chmod +x scripts/update_projects.sh
+          ./scripts/update_projects.sh
+
+      - name: 初始化策略注册表（首次运行）
+        run: |
+          if [ ! -f "$REGISTRY_PATH" ]; then
+            cp strategy_registry.json $REGISTRY_PATH
           fi
 
-      - name: 准备行业分类缓存（首次运行时生成）
+      - name: 注入环境变量到 daily_stock_analysis
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          cp .env.example .env || true
+          echo "STOCK_LIST=${{ secrets.STOCK_LIST }}" >> .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
+          echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
+          echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
+          echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
+          echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
+          echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
+          echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
+          echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
+          echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
+
+      - name: 应用 TickFlow 补丁（大盘复盘）
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
+
+      - name: 大盘复盘（生成今日信号）
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          python main.py --market-review --no-notify
         env:
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          ALPHASIFT_ENABLED: false
+
+      # ----- 策略选择（读取策略注册表） -----
+      - name: 策略自动选择
+        id: select_strategy
         run: |
-          cd ${{ github.workspace }}
-          if [ ! -f "data/industry_cache.json" ]; then
-            python scripts/update_industry_cache.py
-          else
-            echo "✅ 行业缓存已存在，跳过更新"
-          fi
-
-      - name: AlphaSift 全市场扫描
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          command: |
-            cd ${{ github.workspace }}
-            STRATEGY="${{ env.SELECTED_STRATEGY }}"
-            case "$STRATEGY" in
-              rsi_reversion_v1)
-                ALPHA_STRATEGY="oversold_reversal"
-                ;;
-              trend_pullback_rebound)
-                ALPHA_STRATEGY="momentum_quality"
-                ;;
-              volume_breakout)
-                ALPHA_STRATEGY="volume_breakout"
-                ;;
-              *)
-                ALPHA_STRATEGY="$STRATEGY"
-                ;;
-            esac
-            echo "📊 AlphaSift 使用策略: $ALPHA_STRATEGY"
-            cd alphasift
-            alphasift screen $ALPHA_STRATEGY --no-llm --save-run --market cn
-            mkdir -p ../shared
-            cp data/runs/*.json ../shared/candidates_all.json 2>/dev/null || echo '{"picks":[]}' > ../shared/candidates_all.json
-
-      - name: 合并主线候选与全市场候选
-        run: |
-          cd ${{ github.workspace }}
-          python scripts/merge_candidates.py
-
-      - name: 解析选股结果并注入环境变量
-        id: pass_stocks
-        run: |
-          if [ -f shared/candidates.json ] && [ -s shared/candidates.json ]; then
-            STOCKS=$(jq -r '.picks[]? | .code' shared/candidates.json | head -10 | tr '\n' ',' | sed 's/,$//')
-            echo "STOCK_LIST=$STOCKS" >> $GITHUB_ENV
-            echo "已提取股票列表: $STOCKS"
-          else
-            echo "STOCK_LIST=${{ secrets.STOCK_LIST }}" >> $GITHUB_ENV
-          fi
-
-      - name: daily_stock_analysis 深度分析
-        if: github.event.inputs.dry_run != 'true'
+          python scripts/select_strategy.py
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-          LITELLM_MODEL: openai/${{ secrets.OPENAI_MODEL }}
-          STOCK_LIST: ${{ env.STOCK_LIST }}
-          EMAIL_ENABLED: true
-          SEND_EMAIL: true
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
-        run: |
-          cd daily_stock_analysis
-          python main.py
+          WORK_DIR: ${{ env.WORK_DIR }}
+          REGISTRY_PATH: ${{ env.REGISTRY_PATH }}
 
-      - name: 计算候选股买卖价格
-        if: github.event.inputs.dry_run != 'true'
+      # ----- AlphaSift 选股 -----
+      - name: AlphaSift 选股
         run: |
-          cd ${{ github.workspace }}
-          python pricing_calculator.py
-
-      - name: 发送定价报告邮件
-        if: github.event.inputs.dry_run != 'true'
+          cd $WORK_DIR/alphasift
+          pip install -e . || true
+          STRATEGY="${{ steps.select_strategy.outputs.alpha_sift_strategy }}"
+          echo "使用策略: $STRATEGY"
+          alphasift screen $STRATEGY --no-llm --save-run
+          latest_json=$(ls -t data/runs/*.json 2>/dev/null | head -1)
+          if [ -z "$latest_json" ]; then
+            echo "错误：未生成选股结果 JSON"
+            exit 1
+          fi
+          echo "选股结果 JSON: $latest_json"
+          mkdir -p $WORK_DIR/daily_stock_analysis/data
+          python $GITHUB_WORKSPACE/scripts/convert_alphasift_json_to_csv.py "$latest_json" $WORK_DIR/daily_stock_analysis/data/stock_pool.csv
+          if [ $? -eq 0 ]; then
+            echo "选股结果已保存到 shared/stock_pool.csv"
+          else
+            echo "错误：转换 CSV 失败"
+            exit 1
+          fi
         env:
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
-        run: |
-          cd ${{ github.workspace }}
-          python pricing_calculator.py --send-email
+          ALPHASIFT_ENABLED: true
 
-      # ========== 可选增强：探测 AlphaEvo 适配器（首次运行后可删除） ==========
-      - name: 探测 AlphaEvo 适配器
+      # ========== 修改点：AlphaEvo 回测，优先使用 dsa 适配器 ==========
+      - name: AlphaEvo 回测验证
+        id: alphaevo_backtest
         run: |
           cd $WORK_DIR/alphaevo
-          echo "🔍 AlphaEvo 支持的适配器列表："
-          alphaevo run --help | grep -A 10 "adapter" || true
-          echo ""
-          echo "🔍 检查 DSA 适配器是否可用："
-          alphaevo run --help | grep -i dsa || true
-
-      # ========== 修改点：AlphaEvo 回测，适配器改为 dsa ==========
-      - name: AlphaEvo 回测
-        id: backtest
-        env:
-          ALPHAEVO_LOG_LEVEL: INFO
-        run: |
-          cd $WORK_DIR/alphaevo
-          STRATEGY=$(cat ${{ github.workspace }}/selected_strategy.txt)   # 从文件读取策略名，与前面完全一致
+          mkdir -p data reports
+          STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
           echo "AlphaEvo 使用策略: $STRATEGY"
-          
-          # 优先使用 dsa 适配器（读取 daily_stock_analysis 的缓存数据）
-          if alphaevo run "$STRATEGY" --adapter dsa --output reports/; then
+          # 优先使用 dsa（读取 daily_stock_analysis 缓存），失败则降级 yfinance
+          if alphaevo run "$STRATEGY" --adapter dsa --output reports/ 2>/dev/null; then
             echo "✅ AlphaEvo 回测成功 (DSA 缓存数据)"
             echo "backtest_success=true" >> $GITHUB_OUTPUT
+          elif alphaevo run "$STRATEGY" --adapter yfinance --output reports/ 2>/dev/null; then
+            echo "✅ AlphaEvo 回测成功 (yfinance)"
+            echo "backtest_success=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ DSA 适配器失败，尝试 yfinance"
-            if alphaevo run "$STRATEGY" --adapter yfinance --output reports/; then
-              echo "✅ AlphaEvo 回测成功 (yfinance)"
-              echo "backtest_success=true" >> $GITHUB_OUTPUT
-            else
-              echo "⚠️ AlphaEvo 回测失败"
-              echo "backtest_success=false" >> $GITHUB_OUTPUT
-            fi
+            echo "⚠️ AlphaEvo 回测失败"
+            echo "backtest_success=false" >> $GITHUB_OUTPUT
           fi
 
+      # ----- 解析回测报告（无论成败都执行，生成默认绩效） -----
       - name: 解析回测报告
         run: |
-          cd ${{ github.workspace }}
           python scripts/parse_alphaevo_report.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          STRATEGY_ID: ${{ steps.select_strategy.outputs.selected_strategy }}
 
+      # ----- 更新策略注册表（回写绩效） -----
       - name: 更新策略注册表
         run: |
-          cd ${{ github.workspace }}
           python scripts/update_strategy_registry.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          REGISTRY_PATH: ${{ env.REGISTRY_PATH }}
+          STRATEGY_ID: ${{ steps.select_strategy.outputs.selected_strategy }}
 
-      - name: 上传每日报告
-        uses: actions/upload-artifact@v4
+      # ----- 定价计算器（T+1 买入适配） -----
+      - name: 定价计算器
+        run: |
+          python scripts/pricing_calculator.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+
+      # ----- 应用 TickFlow 补丁（完整分析） -----
+      - name: 应用 TickFlow 补丁（完整分析）
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
+
+      - name: daily_stock_analysis 分析与推送
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          cp $WORK_DIR/pricing.md data/pricing.md || true
+          python main.py
+        env:
+          ALPHASIFT_ENABLED: false
+
+      # ----- 条件触发：策略进化（周五/月首/事件） -----
+      - name: 判断是否运行 AlphaEvo 进化
+        id: check_evo
+        run: |
+          DOW=$(date +%u)
+          DOM=$(date +%d)
+          MONITOR_STRATEGY=$(jq -r '.strategies[] | select(.status=="monitor") | .id' $REGISTRY_PATH | head -1)
+          if [ "$DOW" = "5" ] || [ "$DOM" = "01" ] || [ -n "$MONITOR_STRATEGY" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_evo=true" >> $GITHUB_OUTPUT
+            echo "monitor_strategy=$MONITOR_STRATEGY" >> $GITHUB_OUTPUT
+          else
+            echo "run_evo=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: AlphaEvo 策略进化（条件触发）
+        if: steps.check_evo.outputs.run_evo == 'true'
+        run: |
+          cd $WORK_DIR/alphaevo
+          MONITOR_STRATEGY="${{ steps.check_evo.outputs.monitor_strategy }}"
+          DOM=$(date +%d)
+          if [ -n "$MONITOR_STRATEGY" ]; then
+            # 事件触发：对 monitor 策略进行进化（使用 AlphaEvo 策略名）
+            alphaevo evolve "$MONITOR_STRATEGY" --method llm || echo "⚠️ 进化失败"
+          elif [ "$DOM" = "01" ]; then
+            alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
+          else
+            # 周五轻量进化：对当前使用的策略进行进化（使用 AlphaEvo 策略名）
+            STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
+            alphaevo evolve "$STRATEGY" --method llm || echo "⚠️ 进化失败，跳过"
+          fi
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+
+      - name: 归档所有结果
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: daily-reports-${{ github.run_number }}
+          name: quant-results-${{ github.run_id }}
           path: |
-            daily_stock_analysis/reports/
-            alphasift/data/runs/
-            shared/
-            pricing.txt
-            pricing.md
-          retention-days: 7
+            ${{ env.WORK_DIR }}/daily_stock_analysis/data/
+            ${{ env.WORK_DIR }}/daily_stock_analysis/reports/
+            ${{ env.WORK_DIR }}/daily_stock_analysis/logs/
+            ${{ env.WORK_DIR }}/alphaevo/reports/
+            ${{ env.WORK_DIR }}/strategy_registry.json
+            ${{ env.WORK_DIR }}/pricing.md
+          retention-days: 30
+
+      - name: 异常告警（邮件）
+        if: failure()
+        run: |
+          python scripts/send_alert.py
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          ERROR_MSG: "量化流水线执行失败，请检查 Actions 日志。"
