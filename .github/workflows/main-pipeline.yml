@@ -88,7 +88,6 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ===== 为 AlphaEvo 打 yfinance 补丁（使其使用 TickFlow） =====
       - name: 应用 AlphaEvo yfinance 补丁（使用 TickFlow）
         run: |
           cd $WORK_DIR/alphaevo
@@ -99,10 +98,17 @@ jobs:
           cd $WORK_DIR/alphaevo
           mkdir -p data
           cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_raw.csv
+          # 清理可能存在的同名目录
+          if [ -d "data/stock_pool_final.csv" ]; then
+            rm -rf data/stock_pool_final.csv
+          fi
           if alphaevo run rsi_reversion_v1 --output data/stock_pool_final.csv 2>/dev/null; then
             echo "AlphaEvo 回测成功"
           else
             echo "⚠️ AlphaEvo 回测失败，使用原始选股池作为最终池（降级）"
+            if [ -d "data/stock_pool_final.csv" ]; then
+              rm -rf data/stock_pool_final.csv
+            fi
             cp data/stock_pool_raw.csv data/stock_pool_final.csv
           fi
         env: {}
@@ -115,7 +121,17 @@ jobs:
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool_final.csv
+          # 清理可能存在的目录
+          if [ -d "$WORK_DIR/alphaevo/data/stock_pool_final.csv" ]; then
+            echo "⚠️ 发现 stock_pool_final.csv 是目录，正在删除..."
+            rm -rf "$WORK_DIR/alphaevo/data/stock_pool_final.csv"
+          fi
+          # 如果源文件不存在，创建占位 CSV
+          if [ ! -f "$WORK_DIR/alphaevo/data/stock_pool_final.csv" ]; then
+            echo "⚠️ stock_pool_final.csv 不存在，创建空文件（降级）"
+            echo "code,name,final_score,price,change_pct,pe_ratio,pb_ratio,turnover_rate,amount,total_mv" > "$WORK_DIR/alphaevo/data/stock_pool_final.csv"
+          fi
+          cp "$WORK_DIR/alphaevo/data/stock_pool_final.csv" data/stock_pool_final.csv
           python main.py
         env:
           ALPHASIFT_ENABLED: false
@@ -131,7 +147,6 @@ jobs:
             echo "run_evo=false" >> $GITHUB_OUTPUT
           fi
 
-      # 为 AlphaEvo 进化也应用补丁（补丁是全局的，但为了确保，再执行一次）
       - name: 应用 AlphaEvo yfinance 补丁（进化使用）
         if: steps.check_evo.outputs.run_evo == 'true'
         run: |
