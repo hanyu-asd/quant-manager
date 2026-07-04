@@ -2,7 +2,7 @@ name: 每日量化流水线（盘后）
 
 on:
   schedule:
-    - cron: '0 8 * * 1-5'   # 工作日北京时间 16:00（UTC 8:00）
+    - cron: '30 10 * * *'   # 工作日北京时间 18:30（UTC 10:30）
   workflow_dispatch:
 
 jobs:
