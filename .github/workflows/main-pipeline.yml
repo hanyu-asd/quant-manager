@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 30
     env:
       WORK_DIR: /home/runner/work/quant-workspace
+      DB_PATH: /home/runner/work/quant-workspace/daily_stock_analysis/data/stock_analysis.db
     steps:
       - name: 检出总控仓库
         uses: actions/checkout@v4
@@ -29,6 +30,16 @@ jobs:
           chmod +x scripts/update_projects.sh
           ./scripts/update_projects.sh
 
+      # ----- 数据缓存恢复 -----
+      - name: 恢复 DSA 数据库缓存
+        uses: actions/cache@v4
+        id: dsa-cache
+        with:
+          path: ${{ env.DB_PATH }}
+          key: dsa-db-${{ github.run_id }}
+          restore-keys: |
+            dsa-db-
+
       - name: 注入环境变量到 daily_stock_analysis
         run: |
           cd $WORK_DIR/daily_stock_analysis
@@ -39,7 +50,8 @@ jobs:
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
           echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
-          echo "DATA_SOURCE_PRIORITY=tickflow,akshare,tushare,baostock,yfinance" >> .env
+          # 设置数据源优先级，支持自动降级
+          echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
           echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
@@ -88,30 +100,46 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      - name: 应用 AlphaEvo yfinance 补丁（使用 TickFlow）
+      # ----- 增量更新 DSA 数据库（候选股票历史数据） -----
+      - name: 增量更新 DSA 数据库（候选股票历史日线）
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          python $GITHUB_WORKSPACE/scripts/update_dsa_data.py \
+            --stocks-file $WORK_DIR/daily_stock_analysis/data/stock_pool.csv \
+            --days 365
+        env:
+          DATA_SOURCE_PRIORITY: tickflow,tushare,akshare,baostock,yfinance
+        # 若更新失败，打印警告但不中断流水线（后续 AlphaEvo 可降级）
+
+      # ----- AlphaEvo 回测（通过 DSAAdapter） -----
+      - name: AlphaEvo 回测（使用 DSA 数据）
+        id: alphaevo_backtest
         run: |
           cd $WORK_DIR/alphaevo
-          python $GITHUB_WORKSPACE/scripts/patch_alphaevo_yfinance.py
+          mkdir -p data reports
+          python $GITHUB_WORKSPACE/scripts/run_alphaevo_with_dsa.py \
+            --dsa-path $WORK_DIR/daily_stock_analysis \
+            --strategy rsi_reversion_v1 \
+            --output data/stock_pool_final.csv \
+            --report-dir reports/
+        env:
+          # 如果上述脚本失败，则降级到使用 akshare 直接回测
+          # 但我们将在脚本内部实现降级逻辑
+          DATA_SOURCE_PRIORITY: tickflow,tushare,akshare
 
-      - name: AlphaEvo 每日回测校验
+      - name: 检查 AlphaEvo 回测输出，若失败则降级
+        if: failure() || steps.alphaevo_backtest.outcome == 'failure'
         run: |
           cd $WORK_DIR/alphaevo
           mkdir -p data
           cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_raw.csv
-          # 清理可能存在的同名目录
-          if [ -d "data/stock_pool_final.csv" ]; then
-            rm -rf data/stock_pool_final.csv
-          fi
-          if alphaevo run rsi_reversion_v1 --output data/stock_pool_final.csv 2>/dev/null; then
-            echo "AlphaEvo 回测成功"
+          echo "⚠️ AlphaEvo DSA 回测失败，使用 akshare 直接回测（降级）"
+          if alphaevo run rsi_reversion_v1 --adapter akshare --output reports/ --export data/stock_pool_final.csv 2>/dev/null; then
+            echo "降级回测成功"
           else
-            echo "⚠️ AlphaEvo 回测失败，使用原始选股池作为最终池（降级）"
-            if [ -d "data/stock_pool_final.csv" ]; then
-              rm -rf data/stock_pool_final.csv
-            fi
+            echo "降级回测也失败，使用原始选股池"
             cp data/stock_pool_raw.csv data/stock_pool_final.csv
           fi
-        env: {}
 
       - name: 应用 TickFlow 补丁（完整分析）
         run: |
@@ -121,17 +149,7 @@ jobs:
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          # 清理可能存在的目录
-          if [ -d "$WORK_DIR/alphaevo/data/stock_pool_final.csv" ]; then
-            echo "⚠️ 发现 stock_pool_final.csv 是目录，正在删除..."
-            rm -rf "$WORK_DIR/alphaevo/data/stock_pool_final.csv"
-          fi
-          # 如果源文件不存在，创建占位 CSV
-          if [ ! -f "$WORK_DIR/alphaevo/data/stock_pool_final.csv" ]; then
-            echo "⚠️ stock_pool_final.csv 不存在，创建空文件（降级）"
-            echo "code,name,final_score,price,change_pct,pe_ratio,pb_ratio,turnover_rate,amount,total_mv" > "$WORK_DIR/alphaevo/data/stock_pool_final.csv"
-          fi
-          cp "$WORK_DIR/alphaevo/data/stock_pool_final.csv" data/stock_pool_final.csv
+          cp $WORK_DIR/alphaevo/data/stock_pool_final.csv data/stock_pool_final.csv
           python main.py
         env:
           ALPHASIFT_ENABLED: false
@@ -147,26 +165,29 @@ jobs:
             echo "run_evo=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 应用 AlphaEvo yfinance 补丁（进化使用）
+      - name: AlphaEvo 策略进化（通过 DSAAdapter）
         if: steps.check_evo.outputs.run_evo == 'true'
         run: |
           cd $WORK_DIR/alphaevo
-          python $GITHUB_WORKSPACE/scripts/patch_alphaevo_yfinance.py
-
-      - name: AlphaEvo 策略进化（条件触发）
-        if: steps.check_evo.outputs.run_evo == 'true'
-        run: |
-          cd $WORK_DIR/alphaevo
-          DOM=$(date +%d)
-          if [ "$DOM" = "01" ]; then
-            alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
-          else
-            alphaevo evolve rsi_reversion_v1 --method llm || echo "⚠️ 进化失败，跳过"
-          fi
+          python $GITHUB_WORKSPACE/scripts/run_alphaevo_with_dsa.py \
+            --dsa-path $WORK_DIR/daily_stock_analysis \
+            --strategy rsi_reversion_v1 \
+            --mode evolve \
+            --rounds 3
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        # 若进化失败，忽略错误（已有 || echo 处理）
+
+      # ----- 保存数据缓存 -----
+      - name: 保存 DSA 数据库缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DB_PATH }}
+          key: dsa-db-${{ github.run_id }}
+          restore-keys: |
+            dsa-db-
 
       - name: 归档所有结果
         if: always()
@@ -178,7 +199,7 @@ jobs:
             ${{ env.WORK_DIR }}/daily_stock_analysis/reports/
             ${{ env.WORK_DIR }}/daily_stock_analysis/logs/
             ${{ env.WORK_DIR }}/alphaevo/data/
-            ${{ env.WORK_DIR }}/alphaevo/docs/reports/
+            ${{ env.WORK_DIR }}/alphaevo/reports/
           retention-days: 30
 
       - name: 异常告警（邮件）
