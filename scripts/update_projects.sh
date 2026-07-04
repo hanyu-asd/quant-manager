@@ -23,6 +23,5 @@ clone_or_pull $ALPHAEVO_REPO "$WORK_DIR/alphaevo"
 clone_or_pull $ALPHASIFT_REPO "$WORK_DIR/alphasift"
 
 cd $WORK_DIR/daily_stock_analysis && pip install -r requirements.txt
-# 安装 akshare 作为备份，同时安装 DSA 可能需要的依赖
 cd $WORK_DIR/alphaevo && pip install -e ".[data-akshare]" || pip install -e .
 cd $WORK_DIR/alphasift && pip install -e . || pip install alphasift
