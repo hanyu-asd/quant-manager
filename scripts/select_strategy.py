@@ -10,24 +10,20 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# 策略注册表路径
 REGISTRY_PATH = os.environ.get('REGISTRY_PATH', 'strategy_registry.json')
 WORK_DIR = os.environ.get('WORK_DIR', '.')
 
 def get_market_signal():
-    """从大盘复盘报告中提取盘面信号"""
     report_dir = Path(WORK_DIR) / 'daily_stock_analysis' / 'reports'
     today = datetime.now().strftime('%Y%m%d')
     report_path = report_dir / f'market_review_{today}.md'
     if not report_path.exists():
-        # 尝试昨日
         yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
         report_path = report_dir / f'market_review_{yesterday}.md'
         if not report_path.exists():
             return {'score': 50, 'sentiment': 'neutral'}
     with open(report_path, 'r', encoding='utf-8') as f:
         content = f.read()
-    # 提取盘面信号: "盘面信号：67/100（偏暖，可进攻）"
     pattern = r'盘面信号[：:]\s*(\d+)\s*/\s*100\s*[（(]\s*([^）)]+)\s*[）)]'
     match = re.search(pattern, content)
     if match:
@@ -43,7 +39,6 @@ def get_market_signal():
     return {'score': 50, 'sentiment': 'neutral'}
 
 def load_registry():
-    """加载策略注册表"""
     if os.path.exists(REGISTRY_PATH):
         with open(REGISTRY_PATH, 'r') as f:
             return json.load(f)
@@ -109,23 +104,18 @@ def load_registry():
                 }
             ]
         }
-        # 保存默认注册表
         with open(REGISTRY_PATH, 'w') as f:
             json.dump(default, f, indent=2)
         return default
 
 def select_strategy(market_signal, registry):
-    """根据市场信号和策略绩效选择最优策略"""
     score = market_signal['score']
     sentiment = market_signal['sentiment']
 
-    # 1. 筛选 active 策略
-    active_strategies = [s for s in registry['strategies'] if s['status'] == 'active']
+    active_strategies = [s for s in registry['strategies'] if s['status'] != 'retired']
     if not active_strategies:
-        # 如果没有 active 策略，使用默认
         return registry['strategies'][0]
 
-    # 2. 计算每个策略的综合评分
     scored = []
     for s in active_strategies:
         # 基础分：市场匹配度
@@ -152,6 +142,14 @@ def select_strategy(market_signal, registry):
             else:
                 base_score = 50
 
+        # 惩罚 monitor 状态（尤其是回测失败导致的）
+        if s['status'] == 'monitor':
+            # 检查是否有回测失败标记（可通过 retire_reason 包含 "回测失败" 判断）
+            if s.get('retire_reason') and '回测失败' in s.get('retire_reason', ''):
+                base_score -= 20  # 大幅降低优先级
+            else:
+                base_score -= 10
+
         # 加分项：绩效指标
         sharpe = s.get('sharpe_ratio', 0)
         win_rate = s.get('win_rate', 0)
@@ -172,16 +170,14 @@ def select_strategy(market_signal, registry):
         elif max_dd > 0.12:
             base_score -= 5
 
-        # 惩罚最近有衰退趋势的
         trend = s.get('performance_trend', [])
         if len(trend) >= 5:
             recent = trend[-5:]
-            if all(x < 0 for x in recent):  # 连续5天下降
+            if all(x < 0 for x in recent):
                 base_score -= 15
 
         scored.append((base_score, s))
 
-    # 按评分降序排序
     scored.sort(key=lambda x: x[0], reverse=True)
     best = scored[0][1]
     return best
@@ -191,7 +187,6 @@ def main():
     registry = load_registry()
     selected = select_strategy(market_signal, registry)
 
-    # 输出策略信息到环境变量
     with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
         f.write(f"selected_strategy={selected['id']}\n")
         f.write(f"alpha_sift_strategy={selected['alpha_sift_strategy']}\n")
@@ -203,6 +198,8 @@ def main():
     print(f"🎯 选定策略: {selected['id']} (评分: {selected.get('sharpe_ratio', 0)}夏普, {selected.get('win_rate', 0)}胜率)")
     print(f"   AlphaSift: {selected['alpha_sift_strategy']}")
     print(f"   AlphaEvo: {selected['alphaevo_strategy']}")
+    if selected['status'] == 'monitor':
+        print(f"   ⚠️ 策略处于 monitor 状态: {selected.get('retire_reason', '')}")
 
 if __name__ == '__main__':
     main()

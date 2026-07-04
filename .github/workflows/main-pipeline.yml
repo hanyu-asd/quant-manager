@@ -46,7 +46,6 @@ jobs:
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
           echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
-          # TickFlow 优先，移除 efinance
           echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
           echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
@@ -79,7 +78,7 @@ jobs:
         run: |
           cd $WORK_DIR/alphasift
           pip install -e . || true
-          STRATEGY="${{ steps.select_strategy.outputs.selected_strategy }}"
+          STRATEGY="${{ steps.select_strategy.outputs.alpha_sift_strategy }}"
           echo "使用策略: $STRATEGY"
           alphasift screen $STRATEGY --no-llm --save-run
           latest_json=$(ls -t data/runs/*.json 2>/dev/null | head -1)
@@ -99,7 +98,7 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- AlphaEvo 回测验证（使用 akshare 数据源，不导出 CSV） -----
+      # ----- AlphaEvo 回测验证（使用 akshare，失败则降级 yfinance） -----
       - name: AlphaEvo 回测验证
         id: alphaevo_backtest
         run: |
@@ -107,18 +106,20 @@ jobs:
           mkdir -p data reports
           STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
           echo "AlphaEvo 使用策略: $STRATEGY"
-          # 回测，只生成报告，不导出 CSV
+          # 尝试 akshare，失败则使用 yfinance
           if alphaevo run "$STRATEGY" --adapter akshare --output reports/ 2>/dev/null; then
-            echo "✅ AlphaEvo 回测成功"
+            echo "✅ AlphaEvo 回测成功 (akshare)"
+            echo "backtest_success=true" >> $GITHUB_OUTPUT
+          elif alphaevo run "$STRATEGY" --adapter yfinance --output reports/ 2>/dev/null; then
+            echo "✅ AlphaEvo 回测成功 (yfinance)"
             echo "backtest_success=true" >> $GITHUB_OUTPUT
           else
             echo "⚠️ AlphaEvo 回测失败"
             echo "backtest_success=false" >> $GITHUB_OUTPUT
           fi
 
-      # ----- 解析回测报告，提取绩效指标 -----
+      # ----- 解析回测报告（无论成败都执行，生成默认绩效） -----
       - name: 解析回测报告
-        if: steps.alphaevo_backtest.outputs.backtest_success == 'true'
         run: |
           python scripts/parse_alphaevo_report.py
         env:
@@ -140,7 +141,7 @@ jobs:
           python scripts/pricing_calculator.py
         env:
           WORK_DIR: ${{ env.WORK_DIR }}
-          STOCK_LIST: ${{ steps.select_strategy.outputs.stock_list }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
 
       # ----- 应用 TickFlow 补丁（完整分析） -----
       - name: 应用 TickFlow 补丁（完整分析）
@@ -151,7 +152,6 @@ jobs:
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
-          # 将定价报告复制到 DSA 数据目录（可选）
           cp $WORK_DIR/pricing.md data/pricing.md || true
           python main.py
         env:
@@ -163,7 +163,6 @@ jobs:
         run: |
           DOW=$(date +%u)
           DOM=$(date +%d)
-          # 检查策略注册表中是否有 monitor 状态的策略
           MONITOR_STRATEGY=$(jq -r '.strategies[] | select(.status=="monitor") | .id' $REGISTRY_PATH | head -1)
           if [ "$DOW" = "5" ] || [ "$DOM" = "01" ] || [ -n "$MONITOR_STRATEGY" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run_evo=true" >> $GITHUB_OUTPUT
@@ -179,13 +178,13 @@ jobs:
           MONITOR_STRATEGY="${{ steps.check_evo.outputs.monitor_strategy }}"
           DOM=$(date +%d)
           if [ -n "$MONITOR_STRATEGY" ]; then
-            # 事件触发：对 monitor 策略进行进化
+            # 事件触发：对 monitor 策略进行进化（使用 AlphaEvo 策略名）
             alphaevo evolve "$MONITOR_STRATEGY" --method llm || echo "⚠️ 进化失败"
           elif [ "$DOM" = "01" ]; then
             alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
           else
-            # 周五轻量进化：对当前使用的策略进行进化
-            STRATEGY="${{ steps.select_strategy.outputs.selected_strategy }}"
+            # 周五轻量进化：对当前使用的策略进行进化（使用 AlphaEvo 策略名）
+            STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
             alphaevo evolve "$STRATEGY" --method llm || echo "⚠️ 进化失败，跳过"
           fi
         env:

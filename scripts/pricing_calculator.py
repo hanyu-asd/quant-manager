@@ -6,22 +6,19 @@ T+1 定价计算器
 import os
 import sys
 import json
-import csv
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
 
 WORK_DIR = os.environ.get('WORK_DIR', '.')
-STOCK_LIST = os.environ.get('STOCK_LIST', '')
+TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '')
 
-# 默认参数（可由策略动态调整）
-DEFAULT_BUY_OFFSET = 0.98       # 买入偏移系数
-DEFAULT_STOP_LOSS_PCT = 0.05    # 止损比例 5%
-DEFAULT_TAKE_PROFIT_PCT = 0.10  # 止盈比例 10%
-DEFAULT_LOOKBACK = 60           # 计算支撑/压力位的回看天数
+DEFAULT_BUY_OFFSET = 0.98
+DEFAULT_STOP_LOSS_PCT = 0.05
+DEFAULT_TAKE_PROFIT_PCT = 0.10
+DEFAULT_LOOKBACK = 60
 
 def get_stock_pool():
-    """从 DSA 数据目录读取候选股票池"""
     pool_path = Path(WORK_DIR) / 'daily_stock_analysis' / 'data' / 'stock_pool.csv'
     if not pool_path.exists():
         print("⚠️ 未找到候选股票池")
@@ -33,37 +30,57 @@ def get_stock_pool():
     return df['code'].tolist()
 
 def get_latest_close(symbol):
-    """获取最新收盘价（通过 TickFlow 免费版）"""
+    """获取最新收盘价，优先 TickFlow，降级 Tushare"""
+    # 尝试 TickFlow
     try:
         import tickflow as tf
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
-        df = tf.free().klines.get(symbol, start_date=start_date, end_date=end_date)
+        df = tf.get_daily(symbol, start_date=start_date, end_date=end_date)
         if df is not None and not df.empty:
             return df.iloc[-1]['close']
     except Exception as e:
-        print(f"⚠️ 获取 {symbol} 收盘价失败: {e}")
+        print(f"⚠️ TickFlow 获取 {symbol} 收盘价失败: {e}")
+
+    # 降级 Tushare
+    if TUSHARE_TOKEN:
+        try:
+            import tushare as ts
+            ts.set_token(TUSHARE_TOKEN)
+            pro = ts.pro_api()
+            # 转换代码格式
+            if symbol.isdigit():
+                if symbol.startswith('6'):
+                    code = f"{symbol}.SH"
+                else:
+                    code = f"{symbol}.SZ"
+            else:
+                code = symbol
+            df = pro.daily(ts_code=code, start_date=(datetime.now()-timedelta(days=3)).strftime('%Y%m%d'),
+                           end_date=datetime.now().strftime('%Y%m%d'))
+            if df is not None and not df.empty:
+                return df.iloc[-1]['close']
+        except Exception as e:
+            print(f"⚠️ Tushare 获取 {symbol} 收盘价失败: {e}")
     return None
 
-def calculate_support_resistance(symbol, lookback=DEFAULT_LOOKBACK):
-    """计算支撑/压力位（基于 TickFlow 历史日线）"""
+def calculate_support_resistance(symbol, lookback=60):
+    """计算支撑/压力位（TickFlow）"""
     try:
         import tickflow as tf
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=lookback)).strftime('%Y-%m-%d')
-        df = tf.free().klines.get(symbol, start_date=start_date, end_date=end_date)
+        df = tf.get_daily(symbol, start_date=start_date, end_date=end_date)
         if df is None or df.empty:
             return None, None
-        # 计算近期高低点
         recent_high = df['high'].max()
         recent_low = df['low'].min()
         return recent_high, recent_low
     except Exception as e:
         print(f"⚠️ 计算 {symbol} 支撑/压力位失败: {e}")
-        return None, None
+    return None, None
 
-def calculate_prices(symbol, close_price, buy_offset, stop_loss_pct, take_profit_pct):
-    """计算买入价、止盈价、止损价"""
+def calculate_prices(close_price, buy_offset, stop_loss_pct, take_profit_pct):
     entry = close_price * buy_offset
     stop_loss = entry * (1 - stop_loss_pct)
     take_profit = entry * (1 + take_profit_pct)
@@ -75,8 +92,6 @@ def main():
         print("⚠️ 无股票可定价")
         return
 
-    # 加载策略参数（可扩展从注册表获取）
-    # 这里使用默认值，实际可从环境变量或策略注册表读取
     buy_offset = float(os.environ.get('BUY_OFFSET', DEFAULT_BUY_OFFSET))
     stop_loss_pct = float(os.environ.get('STOP_LOSS_PCT', DEFAULT_STOP_LOSS_PCT))
     take_profit_pct = float(os.environ.get('TAKE_PROFIT_PCT', DEFAULT_TAKE_PROFIT_PCT))
@@ -88,9 +103,7 @@ def main():
             print(f"⚠️ 跳过 {code}，无法获取收盘价")
             continue
         support, resistance = calculate_support_resistance(code)
-        entry, stop_loss, take_profit = calculate_prices(
-            code, close, buy_offset, stop_loss_pct, take_profit_pct
-        )
+        entry, stop_loss, take_profit = calculate_prices(close, buy_offset, stop_loss_pct, take_profit_pct)
         results.append({
             'code': code,
             'close_price': round(close, 2),
@@ -128,14 +141,12 @@ def main():
     report_lines.append(f"- 止盈价 = 买入价 × (1 + {take_profit_pct:.0%})")
     report_lines.append("- 支撑/压力位基于近60日TickFlow历史数据计算")
 
-    # 保存报告
     report_path = Path(WORK_DIR) / 'pricing.md'
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(report_lines))
 
     print(f"✅ 定价报告已生成: {report_path}")
 
-    # 同时输出 JSON 供后续使用
     json_path = Path(WORK_DIR) / 'pricing.json'
     with open(json_path, 'w') as f:
         json.dump(results, f, indent=2)

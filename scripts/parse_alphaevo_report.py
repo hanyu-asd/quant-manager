@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 解析 AlphaEvo 回测报告，提取绩效指标
+如果找不到报告，生成保守默认绩效并标记失败状态
 """
 import os
 import sys
@@ -12,42 +13,31 @@ WORK_DIR = os.environ.get('WORK_DIR', '.')
 STRATEGY_ID = os.environ.get('STRATEGY_ID', '')
 
 def find_latest_report():
-    """查找最新的回测报告"""
     reports_dir = Path(WORK_DIR) / 'alphaevo' / 'reports'
     if not reports_dir.exists():
         return None
-    # 查找 *_report.md 文件
     reports = list(reports_dir.glob('*_report.md'))
     if not reports:
         return None
-    # 按修改时间排序
     reports.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return reports[0]
 
 def parse_report(report_path):
-    """解析报告，提取指标"""
     with open(report_path, 'r', encoding='utf-8') as f:
         content = f.read()
-
     metrics = {}
-    # 匹配表格中的 Metric 和 Value
-    # 例如: │ Win Rate         │  50.0% │
     pattern = r'│\s*([^│]+?)\s*│\s*([^│]+?)\s*│'
     matches = re.findall(pattern, content)
     for key, value in matches:
         key = key.strip()
         value = value.strip()
-        # 转换为数字
         try:
             if value.endswith('%'):
                 metrics[key] = float(value.rstrip('%')) / 100
             else:
-                # 尝试直接转换
                 metrics[key] = float(value)
         except ValueError:
-            pass  # 保留字符串
-
-    # 标准化字段名
+            pass
     mapping = {
         'Win Rate': 'win_rate',
         'Avg Return': 'avg_return',
@@ -63,31 +53,42 @@ def parse_report(report_path):
     for k, v in metrics.items():
         new_key = mapping.get(k, k)
         standardized[new_key] = v
-
     return standardized
 
 def main():
-    report_path = find_latest_report()
-    if not report_path:
-        print("⚠️ 未找到回测报告")
-        sys.exit(0)
-
-    print(f"📄 解析报告: {report_path}")
-    metrics = parse_report(report_path)
-    if not metrics:
-        print("⚠️ 未能提取绩效指标")
-        sys.exit(0)
-
-    # 保存为 JSON
     output_dir = Path(WORK_DIR) / 'alphaevo' / 'data'
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / 'backtest_summary.json'
-    with open(summary_path, 'w') as f:
-        json.dump(metrics, f, indent=2)
 
-    print(f"✅ 绩效指标已保存到: {summary_path}")
-    for k, v in metrics.items():
-        print(f"   {k}: {v}")
+    report_path = find_latest_report()
+    if report_path:
+        print(f"📄 解析报告: {report_path}")
+        metrics = parse_report(report_path)
+        if metrics:
+            # 添加成功状态
+            metrics['backtest_status'] = 'success'
+            with open(summary_path, 'w') as f:
+                json.dump(metrics, f, indent=2)
+            print(f"✅ 绩效指标已保存到: {summary_path}")
+            for k, v in metrics.items():
+                if k != 'backtest_status':
+                    print(f"   {k}: {v}")
+            return
+
+    # 没有报告，生成保守默认绩效并标记失败
+    print("⚠️ 未找到回测报告，生成保守默认绩效（标记失败）")
+    conservative_metrics = {
+        "sharpe_ratio": 0.2,
+        "win_rate": 0.4,
+        "max_drawdown": 0.25,
+        "total_return": -0.05,
+        "avg_return": -0.01,
+        "confidence_score": 0.0,
+        "backtest_status": "failed"  # 明确标记失败
+    }
+    with open(summary_path, 'w') as f:
+        json.dump(conservative_metrics, f, indent=2)
+    print(f"✅ 保守默认绩效已保存到: {summary_path}")
 
 if __name__ == '__main__':
     main()
