@@ -22,6 +22,13 @@ clone_or_pull $DSA_REPO "$WORK_DIR/daily_stock_analysis"
 clone_or_pull $ALPHAEVO_REPO "$WORK_DIR/alphaevo"
 clone_or_pull $ALPHASIFT_REPO "$WORK_DIR/alphasift"
 
-cd $WORK_DIR/daily_stock_analysis && pip install -r requirements.txt
-cd $WORK_DIR/alphaevo && pip install -e ".[data-akshare]" || pip install -e .
-cd $WORK_DIR/alphasift && pip install -e . || pip install alphasift
+cd $WORK_DIR/daily_stock_analysis
+pip install -r requirements.txt
+# 确保 tickflow 和 akshare 是最新版（efinance 已废弃）
+pip install --upgrade tickflow akshare tushare
+
+cd $WORK_DIR/alphaevo
+pip install -e ".[data-akshare]" || pip install -e .
+
+cd $WORK_DIR/alphasift
+pip install -e . || pip install alphasift

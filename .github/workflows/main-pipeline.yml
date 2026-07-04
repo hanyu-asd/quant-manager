@@ -8,9 +8,10 @@ on:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       WORK_DIR: /home/runner/work/quant-workspace
+      REGISTRY_PATH: /home/runner/work/quant-workspace/strategy_registry.json
     steps:
       - name: 检出总控仓库
         uses: actions/checkout@v4
@@ -29,6 +30,12 @@ jobs:
           chmod +x scripts/update_projects.sh
           ./scripts/update_projects.sh
 
+      - name: 初始化策略注册表（首次运行）
+        run: |
+          if [ ! -f "$REGISTRY_PATH" ]; then
+            cp strategy_registry.json $REGISTRY_PATH
+          fi
+
       - name: 注入环境变量到 daily_stock_analysis
         run: |
           cd $WORK_DIR/daily_stock_analysis
@@ -39,6 +46,7 @@ jobs:
           echo "OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}" >> .env
           echo "OPENAI_MODEL=openai/${{ secrets.OPENAI_MODEL }}" >> .env
           echo "TUSHARE_TOKEN=${{ secrets.TUSHARE_TOKEN }}" >> .env
+          # TickFlow 优先，移除 efinance
           echo "DATA_SOURCE_PRIORITY=tickflow,tushare,akshare,baostock,yfinance" >> .env
           echo "EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}" >> .env
           echo "EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}" >> .env
@@ -57,13 +65,16 @@ jobs:
         env:
           ALPHASIFT_ENABLED: false
 
+      # ----- 策略选择（读取策略注册表） -----
       - name: 策略自动选择
         id: select_strategy
         run: |
           python scripts/select_strategy.py
         env:
           WORK_DIR: ${{ env.WORK_DIR }}
+          REGISTRY_PATH: ${{ env.REGISTRY_PATH }}
 
+      # ----- AlphaSift 选股 -----
       - name: AlphaSift 选股
         run: |
           cd $WORK_DIR/alphasift
@@ -88,34 +99,50 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- 生成 AlphaEvo 策略配置文件 -----
-      - name: 生成 AlphaEvo 策略配置文件
-        run: |
-          cd $WORK_DIR/daily_stock_analysis
-          python $GITHUB_WORKSPACE/scripts/generate_alphaevo_strategy.py \
-            --stock-csv data/stock_pool.csv \
-            --output $WORK_DIR/alphaevo/custom_strategy.yaml
-
-      # ----- AlphaEvo 回测（使用自定义策略） -----
-      - name: AlphaEvo 回测校验
-        id: alphaevo
+      # ----- AlphaEvo 回测验证（使用 akshare 数据源，不导出 CSV） -----
+      - name: AlphaEvo 回测验证
+        id: alphaevo_backtest
         run: |
           cd $WORK_DIR/alphaevo
-          mkdir -p data
-          # 尝试使用 --config 加载策略文件
-          if alphaevo run --config custom_strategy.yaml --output data/ --export data/stock_pool_final.csv 2>/dev/null; then
+          mkdir -p data reports
+          STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
+          echo "AlphaEvo 使用策略: $STRATEGY"
+          # 回测，只生成报告，不导出 CSV
+          if alphaevo run "$STRATEGY" --adapter akshare --output reports/ 2>/dev/null; then
             echo "✅ AlphaEvo 回测成功"
-            if [ ! -f data/stock_pool_final.csv ]; then
-              echo "⚠️ 未生成最终池文件，使用原始选股池"
-              cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_final.csv
-            fi
+            echo "backtest_success=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ AlphaEvo 回测失败，使用原始选股池作为最终池（降级）"
-            cp $WORK_DIR/daily_stock_analysis/data/stock_pool.csv data/stock_pool_final.csv
+            echo "⚠️ AlphaEvo 回测失败"
+            echo "backtest_success=false" >> $GITHUB_OUTPUT
           fi
-          # 复制结果到 DSA 数据目录
-          cp data/stock_pool_final.csv $WORK_DIR/daily_stock_analysis/data/stock_pool_final.csv
 
+      # ----- 解析回测报告，提取绩效指标 -----
+      - name: 解析回测报告
+        if: steps.alphaevo_backtest.outputs.backtest_success == 'true'
+        run: |
+          python scripts/parse_alphaevo_report.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          STRATEGY_ID: ${{ steps.select_strategy.outputs.selected_strategy }}
+
+      # ----- 更新策略注册表（回写绩效） -----
+      - name: 更新策略注册表
+        run: |
+          python scripts/update_strategy_registry.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          REGISTRY_PATH: ${{ env.REGISTRY_PATH }}
+          STRATEGY_ID: ${{ steps.select_strategy.outputs.selected_strategy }}
+
+      # ----- 定价计算器（T+1 买入适配） -----
+      - name: 定价计算器
+        run: |
+          python scripts/pricing_calculator.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          STOCK_LIST: ${{ steps.select_strategy.outputs.stock_list }}
+
+      # ----- 应用 TickFlow 补丁（完整分析） -----
       - name: 应用 TickFlow 补丁（完整分析）
         run: |
           cd $WORK_DIR/daily_stock_analysis
@@ -124,32 +151,42 @@ jobs:
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
+          # 将定价报告复制到 DSA 数据目录（可选）
+          cp $WORK_DIR/pricing.md data/pricing.md || true
           python main.py
         env:
           ALPHASIFT_ENABLED: false
 
-      - name: 判断是否运行 AlphaEvo 进化（条件触发：周五或月首）
+      # ----- 条件触发：策略进化（周五/月首/事件） -----
+      - name: 判断是否运行 AlphaEvo 进化
         id: check_evo
         run: |
           DOW=$(date +%u)
           DOM=$(date +%d)
-          if [ "$DOW" = "5" ] || [ "$DOM" = "01" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # 检查策略注册表中是否有 monitor 状态的策略
+          MONITOR_STRATEGY=$(jq -r '.strategies[] | select(.status=="monitor") | .id' $REGISTRY_PATH | head -1)
+          if [ "$DOW" = "5" ] || [ "$DOM" = "01" ] || [ -n "$MONITOR_STRATEGY" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run_evo=true" >> $GITHUB_OUTPUT
+            echo "monitor_strategy=$MONITOR_STRATEGY" >> $GITHUB_OUTPUT
           else
             echo "run_evo=false" >> $GITHUB_OUTPUT
           fi
 
-      # ----- AlphaEvo 策略进化（条件触发） -----
       - name: AlphaEvo 策略进化（条件触发）
         if: steps.check_evo.outputs.run_evo == 'true'
         run: |
           cd $WORK_DIR/alphaevo
+          MONITOR_STRATEGY="${{ steps.check_evo.outputs.monitor_strategy }}"
           DOM=$(date +%d)
-          if [ "$DOM" = "01" ]; then
+          if [ -n "$MONITOR_STRATEGY" ]; then
+            # 事件触发：对 monitor 策略进行进化
+            alphaevo evolve "$MONITOR_STRATEGY" --method llm || echo "⚠️ 进化失败"
+          elif [ "$DOM" = "01" ]; then
             alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
           else
-            # 进化同样使用自定义策略文件
-            alphaevo evolve --config custom_strategy.yaml --method llm || echo "⚠️ 进化失败，跳过"
+            # 周五轻量进化：对当前使用的策略进行进化
+            STRATEGY="${{ steps.select_strategy.outputs.selected_strategy }}"
+            alphaevo evolve "$STRATEGY" --method llm || echo "⚠️ 进化失败，跳过"
           fi
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -165,8 +202,9 @@ jobs:
             ${{ env.WORK_DIR }}/daily_stock_analysis/data/
             ${{ env.WORK_DIR }}/daily_stock_analysis/reports/
             ${{ env.WORK_DIR }}/daily_stock_analysis/logs/
-            ${{ env.WORK_DIR }}/alphaevo/data/
             ${{ env.WORK_DIR }}/alphaevo/reports/
+            ${{ env.WORK_DIR }}/strategy_registry.json
+            ${{ env.WORK_DIR }}/pricing.md
           retention-days: 30
 
       - name: 异常告警（邮件）

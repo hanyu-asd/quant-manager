@@ -1,0 +1,60 @@
+{
+  "strategies": [
+    {
+      "id": "momentum_trend",
+      "alpha_sift_strategy": "momentum_quality",
+      "alphaevo_strategy": "trend_following",
+      "status": "active",
+      "deployed_date": "2026-01-01",
+      "last_evaluated": null,
+      "sharpe_ratio": 0.8,
+      "win_rate": 0.58,
+      "max_drawdown": 0.12,
+      "performance_trend": [],
+      "evolution_count": 0,
+      "retire_reason": null
+    },
+    {
+      "id": "balanced_alpha",
+      "alpha_sift_strategy": "balanced_alpha",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "status": "active",
+      "deployed_date": "2026-01-01",
+      "last_evaluated": null,
+      "sharpe_ratio": 0.7,
+      "win_rate": 0.55,
+      "max_drawdown": 0.10,
+      "performance_trend": [],
+      "evolution_count": 0,
+      "retire_reason": null
+    },
+    {
+      "id": "value_defensive",
+      "alpha_sift_strategy": "value_defensive",
+      "alphaevo_strategy": "value_mean_reversion",
+      "status": "active",
+      "deployed_date": "2026-01-01",
+      "last_evaluated": null,
+      "sharpe_ratio": 0.6,
+      "win_rate": 0.52,
+      "max_drawdown": 0.08,
+      "performance_trend": [],
+      "evolution_count": 0,
+      "retire_reason": null
+    },
+    {
+      "id": "oversold_rebound",
+      "alpha_sift_strategy": "oversold_rebound",
+      "alphaevo_strategy": "oversold_reversal",
+      "status": "active",
+      "deployed_date": "2026-01-01",
+      "last_evaluated": null,
+      "sharpe_ratio": 0.5,
+      "win_rate": 0.50,
+      "max_drawdown": 0.15,
+      "performance_trend": [],
+      "evolution_count": 0,
+      "retire_reason": null
+    }
+  ]
+}
