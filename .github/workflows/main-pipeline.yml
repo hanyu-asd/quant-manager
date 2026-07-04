@@ -38,7 +38,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # 配置pip镜像源（加速下载）
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip config set global.timeout 120
           pip config set global.retries 5
@@ -51,7 +50,6 @@ jobs:
           pip install -e .
           cd ../alphaevo
           pip install -e .
-          # 基础数据源 + TickFlow + zzshare
           pip install requests baostock akshare pandas numpy tushare tickflow zzshare
 
       - name: 动态主线识别 + 策略选择
@@ -163,24 +161,24 @@ jobs:
           cd ${{ github.workspace }}
           python pricing_calculator.py --send-email
 
-      # ⭐⭐⭐ 新增：探测 AlphaEvo 支持的适配器（可选增强，首次运行后可删除）⭐⭐⭐
+      # ========== 可选增强：探测 AlphaEvo 适配器（首次运行后可删除） ==========
       - name: 探测 AlphaEvo 适配器
         run: |
           cd $WORK_DIR/alphaevo
-          echo "🔍 查看 AlphaEvo 支持的适配器列表："
+          echo "🔍 AlphaEvo 支持的适配器列表："
           alphaevo run --help | grep -A 10 "adapter" || true
           echo ""
-          echo "🔍 检查 DSAAdapter 是否可用："
+          echo "🔍 检查 DSA 适配器是否可用："
           alphaevo run --help | grep -i dsa || true
 
-      # ⭐⭐⭐ 修改：AlphaEvo 回测 - 优先使用 DSA 适配器 ⭐⭐⭐
+      # ========== 修改点：AlphaEvo 回测，适配器改为 dsa ==========
       - name: AlphaEvo 回测
         id: backtest
         env:
-          ALPHAEVO_LOG_LEVEL: INFO   # 可改为 DEBUG 以获取详细日志
+          ALPHAEVO_LOG_LEVEL: INFO
         run: |
           cd $WORK_DIR/alphaevo
-          STRATEGY="rsi_reversion_v1"
+          STRATEGY=$(cat ${{ github.workspace }}/selected_strategy.txt)   # 从文件读取策略名，与前面完全一致
           echo "AlphaEvo 使用策略: $STRATEGY"
           
           # 优先使用 dsa 适配器（读取 daily_stock_analysis 的缓存数据）
@@ -188,7 +186,6 @@ jobs:
             echo "✅ AlphaEvo 回测成功 (DSA 缓存数据)"
             echo "backtest_success=true" >> $GITHUB_OUTPUT
           else
-            # 若 dsa 不可用（如适配器名称不匹配），降级到 yfinance
             echo "⚠️ DSA 适配器失败，尝试 yfinance"
             if alphaevo run "$STRATEGY" --adapter yfinance --output reports/; then
               echo "✅ AlphaEvo 回测成功 (yfinance)"
