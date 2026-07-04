@@ -5,9 +5,7 @@
 如果找不到报告，生成保守默认绩效并标记失败
 """
 import os
-import sys
 import json
-import re
 from pathlib import Path
 
 WORK_DIR = os.environ.get('WORK_DIR', '.')
@@ -25,21 +23,9 @@ def find_latest_report():
 
 def parse_report(report_path):
     with open(report_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+        lines = f.readlines()
+    
     metrics = {}
-    # 改进匹配：支持 `│` 和 `┃` 两种分隔符
-    pattern = r'[│┃]\s*([^│┃]+?)\s*[│┃]\s*([^│┃]+?)\s*[│┃]'
-    matches = re.findall(pattern, content)
-    for key, value in matches:
-        key = key.strip()
-        value = value.strip()
-        try:
-            if value.endswith('%'):
-                metrics[key] = float(value.rstrip('%')) / 100
-            else:
-                metrics[key] = float(value)
-        except ValueError:
-            pass
     mapping = {
         'Win Rate': 'win_rate',
         'Avg Return': 'avg_return',
@@ -51,6 +37,23 @@ def parse_report(report_path):
         'Total Return': 'total_return',
         'Confidence Score': 'confidence_score'
     }
+    
+    for line in lines:
+        # 只处理包含数据分隔符 '┃' 的行，排除表头和边框行
+        if '┃' in line and not any(c in line for c in ['━', '┏', '┓', '┗', '┛', '┡', '┢', '┣', '┫']):
+            parts = [p.strip() for p in line.split('┃') if p.strip()]
+            if len(parts) >= 2:
+                key = parts[0]
+                value = parts[1]
+                if key in mapping:
+                    try:
+                        if value.endswith('%'):
+                            metrics[key] = float(value.rstrip('%')) / 100
+                        else:
+                            metrics[key] = float(value)
+                    except ValueError:
+                        pass
+    
     standardized = {}
     for k, v in metrics.items():
         new_key = mapping.get(k, k)
@@ -75,7 +78,6 @@ def main():
                 if k != 'backtest_status':
                     print(f"   {k}: {v}")
         else:
-            # 报告存在但解析失败，生成默认成功绩效
             print("⚠️ 报告解析失败，使用默认成功绩效")
             default_metrics = {
                 "sharpe_ratio": 0.5,
@@ -91,7 +93,6 @@ def main():
             print(f"✅ 默认绩效已保存到: {summary_path}")
         return
 
-    # 没有报告，生成保守默认绩效并标记失败
     print("⚠️ 未找到回测报告，生成保守默认绩效（标记失败）")
     conservative_metrics = {
         "sharpe_ratio": 0.2,
