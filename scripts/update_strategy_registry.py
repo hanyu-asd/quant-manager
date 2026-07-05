@@ -1,108 +1,101 @@
 #!/usr/bin/env python3
 """
-更新策略注册表 - 回写回测绩效
-如果回测失败，将策略状态设为 monitor 并记录原因
+更新策略注册表：写入回测绩效，保留 factor_exposure
 """
 import os
-import sys
 import json
-from datetime import datetime
 from pathlib import Path
 
-REGISTRY_PATH = os.environ.get('REGISTRY_PATH', 'strategy_registry.json')
-STRATEGY_ID = os.environ.get('STRATEGY_ID', '')
 WORK_DIR = os.environ.get('WORK_DIR', '.')
+REGISTRY_PATH = os.environ.get('REGISTRY_PATH', os.path.join(WORK_DIR, 'strategy_registry.json'))
+STRATEGY_ID = os.environ.get('STRATEGY_ID', '')
+BACKTEST_SUMMARY = os.path.join(WORK_DIR, 'alphaevo/data/backtest_summary.json')
 
-def load_registry():
-    with open(REGISTRY_PATH, 'r') as f:
-        return json.load(f)
 
-def save_registry(registry):
-    with open(REGISTRY_PATH, 'w') as f:
-        json.dump(registry, f, indent=2)
+def load_json(path):
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except:
+        return None
 
-def get_backtest_metrics(strategy_id):
-    """从回测报告中提取绩效指标和状态"""
-    metrics_file = Path(WORK_DIR) / 'alphaevo' / 'data' / 'backtest_summary.json'
-    if not metrics_file.exists():
-        print(f"⚠️ 未找到绩效文件，使用保守默认值并标记失败")
-        return {
-            'sharpe_ratio': 0.2,
-            'win_rate': 0.4,
-            'max_drawdown': 0.25,
-            'total_return': -0.05,
-            'avg_return': -0.01,
-            'backtest_status': 'failed'
-        }
-    with open(metrics_file, 'r') as f:
-        data = json.load(f)
-    # 确保状态字段存在
-    if 'backtest_status' not in data:
-        data['backtest_status'] = 'success'
-    return data
 
-def evaluate_strategy_status(strategy, metrics):
-    """根据绩效和状态评估策略状态"""
-    status = metrics.get('backtest_status', 'success')
-    if status == 'failed':
-        return 'monitor', "回测失败，可能数据源不可用或策略配置异常"
+def save_json(path, data):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
 
-    sharpe = metrics.get('sharpe_ratio', 0)
-    win_rate = metrics.get('win_rate', 0)
-    max_dd = metrics.get('max_drawdown', 0)
-
-    if sharpe > 1.5 and win_rate > 0.6 and max_dd < 0.10:
-        return 'active', None
-    elif sharpe < 0.3 or win_rate < 0.4 or max_dd > 0.25:
-        return 'retired', f"绩效恶化: 夏普={sharpe}, 胜率={win_rate}, 回撤={max_dd}"
-    elif sharpe < 0.5 or max_dd > 0.15:
-        return 'monitor', f"绩效下滑: 夏普={sharpe}, 回撤={max_dd}"
-    else:
-        return 'active', None
 
 def main():
     if not STRATEGY_ID:
-        print("⚠️ 未指定策略ID，跳过注册表更新")
+        print("未指定 STRATEGY_ID，跳过更新")
         return
 
-    registry = load_registry()
-    strategy = next((s for s in registry['strategies'] if s['id'] == STRATEGY_ID), None)
-    if not strategy:
-        print(f"⚠️ 策略 {STRATEGY_ID} 不在注册表中")
+    registry = load_json(REGISTRY_PATH)
+    if not registry:
+        print("注册表加载失败")
         return
 
-    metrics = get_backtest_metrics(STRATEGY_ID)
-    if not metrics:
-        print(f"⚠️ 无法获取绩效，使用保守默认值")
-        metrics = {'sharpe_ratio': 0.2, 'win_rate': 0.4, 'max_drawdown': 0.25, 'total_return': -0.05, 'backtest_status': 'failed'}
+    strategies = registry.get('strategies', [])
+    target = None
+    for s in strategies:
+        if s.get('id') == STRATEGY_ID:
+            target = s
+            break
 
-    # 更新绩效字段
-    strategy['sharpe_ratio'] = metrics.get('sharpe_ratio', 0.2)
-    strategy['win_rate'] = metrics.get('win_rate', 0.4)
-    strategy['max_drawdown'] = metrics.get('max_drawdown', 0.25)
-    strategy['last_evaluated'] = datetime.now().strftime('%Y-%m-%d')
+    if not target:
+        print(f"策略 {STRATEGY_ID} 未找到")
+        return
 
-    # 更新绩效趋势
-    if 'performance_trend' not in strategy:
-        strategy['performance_trend'] = []
-    trend_value = metrics.get('total_return', -0.05)
-    strategy['performance_trend'].append(trend_value)
-    if len(strategy['performance_trend']) > 30:
-        strategy['performance_trend'] = strategy['performance_trend'][-30:]
+    backtest = load_json(BACKTEST_SUMMARY)
+    if not backtest:
+        print("未找到回测摘要，跳过更新")
+        return
 
-    # 评估状态
-    new_status, reason = evaluate_strategy_status(strategy, metrics)
-    if new_status != strategy['status']:
-        print(f"🔄 策略 {STRATEGY_ID} 状态变更: {strategy['status']} → {new_status}")
-        if reason:
-            strategy['retire_reason'] = reason
-            # 如果是回测失败导致的 monitor，记录失败原因
-            if metrics.get('backtest_status') == 'failed':
-                strategy['retire_reason'] = "回测失败 (可能数据源不可用)"
-        strategy['status'] = new_status
+    # 更新绩效（保留 factor_exposure 不变）
+    if 'metrics' not in target:
+        target['metrics'] = {}
 
-    save_registry(registry)
-    print(f"✅ 策略注册表已更新: {STRATEGY_ID}")
+    # 映射回测字段到注册表字段
+    field_map = {
+        'sharpe_ratio': 'sharpe_ratio',
+        'win_rate': 'win_rate',
+        'max_drawdown': 'max_drawdown',
+        'total_return': 'total_return',
+        'avg_return': 'avg_return',
+        'confidence_score': 'confidence_score'
+    }
+
+    for backtest_key, registry_key in field_map.items():
+        if backtest_key in backtest:
+            target[registry_key] = backtest[backtest_key]
+
+    # 状态更新
+    sharpe = target.get('sharpe_ratio', 0.0)
+    win_rate = target.get('win_rate', 0.0)
+    drawdown = target.get('max_drawdown', 0.0)
+
+    # 兜底策略永不退休
+    if target.get('never_retire'):
+        new_status = 'active'
+        reason = '基准策略永不退休'
+    elif sharpe < 0.3 or win_rate < 0.4 or drawdown > 0.25:
+        new_status = 'retired'
+        reason = f"夏普{sharpe:.2f}，胜率{win_rate:.2f}，回撤{drawdown:.2f}"
+    elif sharpe < 0.6 or win_rate < 0.5:
+        new_status = 'monitor'
+        reason = f"夏普{sharpe:.2f}，胜率{win_rate:.2f}"
+    else:
+        new_status = 'active'
+        reason = '绩效良好'
+
+    target['status'] = new_status
+    target['retire_reason'] = reason
+    target['last_evaluated'] = str(Path(BACKTEST_SUMMARY).stat().st_mtime)
+
+    save_json(REGISTRY_PATH, registry)
+    print(f"✅ 策略 {STRATEGY_ID} 状态更新为 {new_status} ({reason})")
+    print(f"   保留 factor_exposure: {target.get('factor_exposure', {})}")
+
 
 if __name__ == '__main__':
     main()

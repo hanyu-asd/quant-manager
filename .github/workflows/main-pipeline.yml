@@ -64,7 +64,15 @@ jobs:
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 策略选择（读取策略注册表） -----
+      # ----- 新增：市场状态感知（生成权重向量） -----
+      - name: 市场状态感知
+        run: |
+          python scripts/market_regime.py
+        env:
+          WORK_DIR: ${{ env.WORK_DIR }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+
+      # ----- 策略选择（基于因子匹配） -----
       - name: 策略自动选择
         id: select_strategy
         run: |
@@ -98,7 +106,7 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ========== 修改点：AlphaEvo 回测，优先使用 dsa 适配器，并配置 DSA 路径 ==========
+      # ----- AlphaEvo 回测，优先使用 dsa 适配器 -----
       - name: AlphaEvo 回测验证
         id: alphaevo_backtest
         env:

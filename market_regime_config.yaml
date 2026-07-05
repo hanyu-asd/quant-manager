@@ -1,0 +1,13 @@
+# 市场状态感知参数配置
+threshold: 0.03              # 风格差阈值（3%）
+discount: 0.7                # 方向不一致时的置信度折扣
+min_amplitude: 1.0           # 最小幅度（%）
+window_short: 20             # 短期窗口（日）
+window_long: 60              # 长期窗口（日）
+
+# 数据降级链
+index_pairs:
+  - value_code: "000922"     # 中证红利（首选）
+    growth_code: "000688"    # 科创50（首选）
+  - value_code: "000300"     # 沪深300（备选）
+    growth_code: "399006"    # 创业板指（备选）
