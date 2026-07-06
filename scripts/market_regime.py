@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-市场状态感知模块（使用 akshare 获取指数数据）
+市场状态感知模块
+复用 daily_stock_analysis 的 AkshareFetcher 获取指数数据
 输出：权重向量 + 置信度 + 趋势强度 + 数据等级
 写入 $WORK_DIR/daily_stock_analysis/data/market_state.json
 """
@@ -15,13 +16,27 @@ from pathlib import Path
 
 WORK_DIR = os.environ.get('WORK_DIR', '.')
 
-# 尝试导入 akshare
+# ===== 尝试导入 daily_stock_analysis 的数据模块 =====
+DSA_PATH = os.path.join(WORK_DIR, 'daily_stock_analysis')
+sys.path.insert(0, DSA_PATH)
+sys.path.insert(0, os.path.join(DSA_PATH, 'src'))
+
+# 尝试导入 AkshareFetcher
+try:
+    from data_provider.akshare_fetcher import AkshareFetcher
+    HAS_DSA_FETCHER = True
+    print("✅ 成功导入 daily_stock_analysis 的 AkshareFetcher")
+except ImportError as e:
+    HAS_DSA_FETCHER = False
+    print(f"⚠️ 无法导入 AkshareFetcher: {e}，将使用直接调用 akshare 的方式")
+
+# 尝试导入 akshare（作为备用）
 try:
     import akshare as ak
     HAS_AKSHARE = True
 except ImportError:
     HAS_AKSHARE = False
-    print("⚠️ akshare 未安装，请运行: pip install akshare")
+    print("⚠️ akshare 未安装")
 
 
 class MarketRegime:
@@ -51,11 +66,34 @@ class MarketRegime:
         self.window_long = self.config['window_long']
         self.index_pairs = self.config['index_pairs']
 
-    def get_index_data_akshare(self, code, end_date):
-        """
-        使用 akshare 获取指数日线数据
-        支持：000922（中证红利），000688（科创50），000300（沪深300），399006（创业板指）
-        """
+        # 初始化 AkshareFetcher（如果可用）
+        self.fetcher = None
+        if HAS_DSA_FETCHER:
+            try:
+                self.fetcher = AkshareFetcher()
+                print("✅ AkshareFetcher 初始化成功")
+            except Exception as e:
+                print(f"⚠️ AkshareFetcher 初始化失败: {e}")
+                self.fetcher = None
+
+    def get_index_data_akshare_fetcher(self, code, start_date, end_date):
+        """使用 daily_stock_analysis 的 AkshareFetcher 获取指数数据"""
+        if self.fetcher is None:
+            return None
+
+        try:
+            # AkshareFetcher 的 get_index_data 方法签名
+            # 尝试不同的参数格式
+            df = self.fetcher.get_index_data(code, start_date, end_date)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            print(f"⚠️ AkshareFetcher 获取 {code} 失败: {e}")
+
+        return None
+
+    def get_index_data_akshare_direct(self, code, end_date):
+        """直接使用 akshare 获取指数数据（备用方案）"""
         if not HAS_AKSHARE:
             return None
 
@@ -72,28 +110,45 @@ class MarketRegime:
             if df is None or df.empty:
                 return None
             df['date'] = pd.to_datetime(df['date'])
-            # 只保留最近 window_long+10 天的数据
             cutoff = (pd.to_datetime(end_date) - timedelta(days=self.window_long + 10)).strftime('%Y-%m-%d')
             df = df[df['date'] >= cutoff]
             df = df.sort_values('date')
             return df[['date', 'close']]
         except Exception as e:
-            print(f"⚠️ akshare 获取 {code} 失败: {e}")
+            print(f"⚠️ akshare 直接调用获取 {code} 失败: {e}")
             return None
+
+    def get_index_data(self, code, start_date, end_date):
+        """获取指数日线数据（优先使用 AkshareFetcher，降级到直接调用）"""
+        # 方法1：使用 daily_stock_analysis 的 AkshareFetcher
+        df = self.get_index_data_akshare_fetcher(code, start_date, end_date)
+        if df is not None:
+            return df
+
+        # 方法2：直接调用 akshare
+        df = self.get_index_data_akshare_direct(code, end_date)
+        if df is not None:
+            return df
+
+        return None
 
     def fetch_index_pair(self, value_code, growth_code, end_date):
         """获取一对指数的历史数据"""
-        df_v = self.get_index_data_akshare(value_code, end_date)
-        df_g = self.get_index_data_akshare(growth_code, end_date)
+        start_date = (pd.to_datetime(end_date) - timedelta(days=self.window_long + 10)).strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d') if hasattr(end_date, 'strftime') else end_date
+
+        df_v = self.get_index_data(value_code, start_date, end_str)
+        df_g = self.get_index_data(growth_code, start_date, end_str)
+
         if df_v is None or df_g is None or df_v.empty or df_g.empty:
             return None
+
         df = pd.merge(df_v, df_g, on='date', suffixes=('_value', '_growth'))
         df = df.rename(columns={'close_value': 'value', 'close_growth': 'growth'})
         return df
 
     def calc_weights(self, diff):
         """根据风格差计算权重向量"""
-        # 使用 sigmoid 将 diff 映射到 [0,1] 的价值权重
         value_w = 1 / (1 + np.exp(-diff * 2))
         quality_w = 0.1
         growth_w = 1 - value_w - quality_w
@@ -122,6 +177,7 @@ class MarketRegime:
 
         data_level = 1
         df = None
+
         for pair in self.index_pairs:
             df = self.fetch_index_pair(pair['value_code'], pair['growth_code'], asof_date)
             if df is not None and len(df) >= self.window_long + 1:
@@ -203,6 +259,10 @@ def main():
     print(f"   置信度: {state['confidence']}")
     print(f"   数据等级: {state['data_level']}")
     print(f"   风格差(20日): {state['diff']:.4f}")
+
+    # 返回状态码，用于流水线判断
+    if state['data_level'] == 3:
+        sys.exit(0)  # 数据不可用但不报错，由 select_strategy 处理降级
 
 
 if __name__ == '__main__':
