@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-市场状态感知模块
+市场状态感知模块（使用 akshare 获取指数数据）
 输出：权重向量 + 置信度 + 趋势强度 + 数据等级
 写入 $WORK_DIR/daily_stock_analysis/data/market_state.json
 """
@@ -13,33 +13,37 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 添加 daily_stock_analysis 到路径
 WORK_DIR = os.environ.get('WORK_DIR', '.')
-sys.path.insert(0, os.path.join(WORK_DIR, 'daily_stock_analysis'))
 
-# 尝试导入数据源
+# 尝试导入 akshare
 try:
-    import tickflow as tf
-    HAS_TICKFLOW = True
+    import akshare as ak
+    HAS_AKSHARE = True
 except ImportError:
-    HAS_TICKFLOW = False
-
-try:
-    import tushare as ts
-    HAS_TUSHARE = True
-    TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN")
-    if TUSHARE_TOKEN:
-        ts.set_token(TUSHARE_TOKEN)
-except ImportError:
-    HAS_TUSHARE = False
+    HAS_AKSHARE = False
+    print("⚠️ akshare 未安装，请运行: pip install akshare")
 
 
 class MarketRegime:
     def __init__(self, config_path=None):
         if config_path is None:
             config_path = os.path.join(os.path.dirname(__file__), '../market_regime_config.yaml')
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+        else:
+            # 默认配置
+            self.config = {
+                'threshold': 0.03,
+                'discount': 0.7,
+                'min_amplitude': 1.0,
+                'window_short': 20,
+                'window_long': 60,
+                'index_pairs': [
+                    {'value_code': '000922', 'growth_code': '000688'},
+                    {'value_code': '000300', 'growth_code': '399006'}
+                ]
+            }
         self.threshold = self.config['threshold']
         self.discount = self.config['discount']
         self.min_amplitude = self.config['min_amplitude']
@@ -47,46 +51,40 @@ class MarketRegime:
         self.window_long = self.config['window_long']
         self.index_pairs = self.config['index_pairs']
 
-    def get_index_data(self, code, start_date, end_date):
-        """获取指数日线数据，支持 tickflow 和 tushare"""
-        # 尝试 tickflow
-        if HAS_TICKFLOW:
-            try:
-                df = tf.get_daily(code, start_date=start_date, end_date=end_date)
-                if df is not None and not df.empty:
-                    return df
-            except Exception:
-                pass
-        # 尝试 tushare
-        if HAS_TUSHARE and TUSHARE_TOKEN:
-            try:
-                pro = ts.pro_api()
-                if code.startswith('000') or code.startswith('688'):
-                    ts_code = code + '.SH'
-                elif code.startswith('399'):
-                    ts_code = code + '.SZ'
-                else:
-                    ts_code = code
-                df = pro.index_daily(
-                    ts_code=ts_code,
-                    start_date=start_date.replace('-', ''),
-                    end_date=end_date.replace('-', '')
-                )
-                if df is not None and not df.empty:
-                    df = df.rename(columns={'trade_date': 'date', 'close': 'close'})
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.sort_values('date')
-                    return df[['date', 'close']]
-            except Exception:
-                pass
-        return None
+    def get_index_data_akshare(self, code, end_date):
+        """
+        使用 akshare 获取指数日线数据
+        支持：000922（中证红利），000688（科创50），000300（沪深300），399006（创业板指）
+        """
+        if not HAS_AKSHARE:
+            return None
+
+        # 转换代码格式
+        if code.startswith('000') or code.startswith('688'):
+            symbol = 'sh' + code
+        elif code.startswith('399'):
+            symbol = 'sz' + code
+        else:
+            symbol = code
+
+        try:
+            df = ak.stock_zh_index_daily(symbol=symbol)
+            if df is None or df.empty:
+                return None
+            df['date'] = pd.to_datetime(df['date'])
+            # 只保留最近 window_long+10 天的数据
+            cutoff = (pd.to_datetime(end_date) - timedelta(days=self.window_long + 10)).strftime('%Y-%m-%d')
+            df = df[df['date'] >= cutoff]
+            df = df.sort_values('date')
+            return df[['date', 'close']]
+        except Exception as e:
+            print(f"⚠️ akshare 获取 {code} 失败: {e}")
+            return None
 
     def fetch_index_pair(self, value_code, growth_code, end_date):
         """获取一对指数的历史数据"""
-        start_date = (end_date - timedelta(days=self.window_long + 10)).strftime('%Y-%m-%d')
-        end_str = end_date.strftime('%Y-%m-%d')
-        df_v = self.get_index_data(value_code, start_date, end_str)
-        df_g = self.get_index_data(growth_code, start_date, end_str)
+        df_v = self.get_index_data_akshare(value_code, end_date)
+        df_g = self.get_index_data_akshare(growth_code, end_date)
         if df_v is None or df_g is None or df_v.empty or df_g.empty:
             return None
         df = pd.merge(df_v, df_g, on='date', suffixes=('_value', '_growth'))
@@ -126,11 +124,13 @@ class MarketRegime:
         df = None
         for pair in self.index_pairs:
             df = self.fetch_index_pair(pair['value_code'], pair['growth_code'], asof_date)
-            if df is not None:
+            if df is not None and len(df) >= self.window_long + 1:
                 break
             data_level += 1
 
+        # 如果所有数据源都失败，返回默认均衡权重
         if df is None or len(df) < self.window_long + 1:
+            print("⚠️ 无法获取指数数据，使用默认均衡权重")
             return {
                 'weights': {'value': 0.34, 'growth': 0.33, 'quality': 0.33},
                 'confidence': 0.0,
@@ -171,6 +171,9 @@ class MarketRegime:
         else:
             label = '混沌'
 
+        print(f"📊 获取到指数数据: 价值指数={df['value'].iloc[-1]:.2f}, 成长指数={df['growth'].iloc[-1]:.2f}")
+        print(f"   风格差(20日): {diff:.4f}, 置信度: {confidence:.2f}")
+
         return {
             'weights': weights,
             'confidence': confidence,
@@ -186,10 +189,6 @@ class MarketRegime:
 def main():
     # 读取配置
     config_path = os.path.join(os.path.dirname(__file__), '../market_regime_config.yaml')
-    if not os.path.exists(config_path):
-        print("⚠️ 配置文件不存在，使用默认参数")
-        # 使用默认参数继续
-
     mr = MarketRegime(config_path if os.path.exists(config_path) else None)
     state = mr.get_regime()
 

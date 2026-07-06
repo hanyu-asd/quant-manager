@@ -1,25 +1,6 @@
 {
   "strategies": [
     {
-      "id": "momentum_trend",
-      "alpha_sift_strategy": "momentum_quality",
-      "alphaevo_strategy": "trend_following",
-      "status": "active",
-      "factor_exposure": {
-        "value": 0.15,
-        "growth": 0.80,
-        "quality": 0.05
-      },
-      "deployed_date": "2026-01-01",
-      "last_evaluated": null,
-      "sharpe_ratio": 0.8,
-      "win_rate": 0.58,
-      "max_drawdown": 0.12,
-      "performance_trend": [],
-      "evolution_count": 0,
-      "retire_reason": null
-    },
-    {
       "id": "balanced_alpha",
       "alpha_sift_strategy": "balanced_alpha",
       "alphaevo_strategy": "rsi_reversion_v1",
@@ -39,9 +20,28 @@
       "retire_reason": null
     },
     {
+      "id": "momentum_trend",
+      "alpha_sift_strategy": "momentum_quality",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "status": "active",
+      "factor_exposure": {
+        "value": 0.15,
+        "growth": 0.80,
+        "quality": 0.05
+      },
+      "deployed_date": "2026-01-01",
+      "last_evaluated": null,
+      "sharpe_ratio": 0.8,
+      "win_rate": 0.58,
+      "max_drawdown": 0.12,
+      "performance_trend": [],
+      "evolution_count": 0,
+      "retire_reason": null
+    },
+    {
       "id": "value_defensive",
       "alpha_sift_strategy": "value_defensive",
-      "alphaevo_strategy": "value_mean_reversion",
+      "alphaevo_strategy": "rsi_reversion_v1",
       "status": "active",
       "factor_exposure": {
         "value": 0.90,
@@ -60,7 +60,7 @@
     {
       "id": "oversold_rebound",
       "alpha_sift_strategy": "oversold_rebound",
-      "alphaevo_strategy": "oversold_reversal",
+      "alphaevo_strategy": "rsi_reversion_v1",
       "status": "active",
       "factor_exposure": {
         "value": 0.10,
@@ -75,26 +75,6 @@
       "performance_trend": [],
       "evolution_count": 0,
       "retire_reason": null
-    },
-    {
-      "id": "baseline_etf",
-      "alpha_sift_strategy": "baseline_etf",
-      "alphaevo_strategy": "baseline_etf",
-      "status": "active",
-      "factor_exposure": {
-        "value": 0.34,
-        "growth": 0.33,
-        "quality": 0.33
-      },
-      "deployed_date": "2026-01-01",
-      "last_evaluated": null,
-      "sharpe_ratio": 0.0,
-      "win_rate": 0.0,
-      "max_drawdown": 0.0,
-      "performance_trend": [],
-      "evolution_count": 0,
-      "retire_reason": null,
-      "never_retire": true
     }
   ]
 }
