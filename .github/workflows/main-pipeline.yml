@@ -25,6 +25,9 @@ jobs:
         run: |
           pip install tickflow tushare pandas pyyaml
 
+      - name: 创建工作目录（如不存在）
+        run: mkdir -p $WORK_DIR
+
       - name: 复制市场状态配置文件
         run: |
           cp market_regime_config.yaml $WORK_DIR/market_regime_config.yaml
