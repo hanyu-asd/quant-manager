@@ -157,6 +157,25 @@ jobs:
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
 
+      # ===== 关键修改：用选股结果覆盖 STOCK_LIST =====
+      - name: 用选股结果覆盖 STOCK_LIST（如有）
+        run: |
+          cd $WORK_DIR/daily_stock_analysis
+          if [ -f "data/stock_pool.csv" ] && [ -s "data/stock_pool.csv" ]; then
+            # 从 CSV 提取股票代码（跳过表头，取第一列）
+            CODES=$(tail -n +2 data/stock_pool.csv | cut -d',' -f1 | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$CODES" ]; then
+              # 删除旧的 STOCK_LIST 行，追加新行
+              sed -i '/^STOCK_LIST=/d' .env
+              echo "STOCK_LIST=$CODES" >> .env
+              echo "✅ 已用选股结果覆盖 STOCK_LIST: $CODES"
+            else
+              echo "⚠️ 选股结果为空，保留原 STOCK_LIST"
+            fi
+          else
+            echo "⚠️ stock_pool.csv 不存在或为空，保留原 STOCK_LIST"
+          fi
+
       - name: daily_stock_analysis 分析与推送
         run: |
           cd $WORK_DIR/daily_stock_analysis
