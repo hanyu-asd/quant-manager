@@ -110,6 +110,31 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
+      # ===== 新增：确认 ALPHAEVO_DSA_PATH 配置 =====
+      - name: 确认 ALPHAEVO_DSA_PATH 配置
+        run: |
+          echo "🔍 检查 ALPHAEVO_DSA_PATH 配置..."
+          echo "  路径: $ALPHAEVO_DSA_PATH"
+          if [ -d "$ALPHAEVO_DSA_PATH" ]; then
+            echo "  ✅ 目录已存在"
+            echo "  内容:"
+            ls -la "$ALPHAEVO_DSA_PATH" | head -20 || echo "  (空目录)"
+          else
+            echo "  ⚠️ 目录不存在，正在创建..."
+            mkdir -p "$ALPHAEVO_DSA_PATH"
+            echo "  ✅ 目录已创建"
+          fi
+          # 检查是否有缓存数据（用于诊断）
+          CACHE_FILES=$(find "$ALPHAEVO_DSA_PATH" -name "*.parquet" -o -name "*.feather" -o -name "*.csv" 2>/dev/null | wc -l)
+          echo "  缓存文件数: $CACHE_FILES"
+          if [ "$CACHE_FILES" -eq 0 ]; then
+            echo "  ⚠️ 缓存目录为空，AlphaEvo DSA 适配器将使用空缓存（可能回退到 yfinance）"
+          else
+            echo "  ✅ 缓存数据存在，AlphaEvo DSA 适配器可正常工作"
+          fi
+        env:
+          ALPHAEVO_DSA_PATH: ${{ env.WORK_DIR }}/daily_stock_analysis/data/cache
+
       - name: AlphaEvo 回测验证
         id: alphaevo_backtest
         env:
@@ -119,6 +144,7 @@ jobs:
           mkdir -p data reports
           STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
           echo "AlphaEvo 使用策略: $STRATEGY"
+          echo "ALPHAEVO_DSA_PATH: $ALPHAEVO_DSA_PATH"
           if alphaevo run "$STRATEGY" --adapter dsa --output reports/ 2>/dev/null; then
             echo "✅ AlphaEvo 回测成功 (DSA 缓存数据)"
             echo "backtest_success=true" >> $GITHUB_OUTPUT
@@ -157,15 +183,12 @@ jobs:
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
 
-      # ===== 关键修改：用选股结果覆盖 STOCK_LIST =====
       - name: 用选股结果覆盖 STOCK_LIST（如有）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           if [ -f "data/stock_pool.csv" ] && [ -s "data/stock_pool.csv" ]; then
-            # 从 CSV 提取股票代码（跳过表头，取第一列）
             CODES=$(tail -n +2 data/stock_pool.csv | cut -d',' -f1 | tr '\n' ',' | sed 's/,$//')
             if [ -n "$CODES" ]; then
-              # 删除旧的 STOCK_LIST 行，追加新行
               sed -i '/^STOCK_LIST=/d' .env
               echo "STOCK_LIST=$CODES" >> .env
               echo "✅ 已用选股结果覆盖 STOCK_LIST: $CODES"
