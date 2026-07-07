@@ -59,21 +59,11 @@ jobs:
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
           echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
 
-      # ========== 改进后的 TickFlow 补丁（大盘复盘） ==========
+      # ========== TickFlow 补丁（仅调用脚本，不内联验证） ==========
       - name: 应用 TickFlow 补丁（大盘复盘）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
-          # 验证补丁是否生效
-          python -c "
-from data_provider.tushare_fetcher import TushareFetcher
-import inspect
-print('TushareFetcher.get_daily_data 定义文件:', inspect.getfile(TushareFetcher.get_daily_data))
-if 'patch_tickflow' in inspect.getfile(TushareFetcher.get_daily_data):
-    print('✅ 补丁已生效')
-else:
-    print('⚠️ 补丁未生效，请检查')
-"
 
       - name: 大盘复盘（生成今日信号）
         run: |
@@ -121,26 +111,17 @@ else:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ===== 确认 ALPHAEVO_DSA_PATH 配置 =====
+      # ===== 确认 ALPHAEVO_DSA_PATH 配置（简单检查） =====
       - name: 确认 ALPHAEVO_DSA_PATH 配置
         run: |
-          echo "🔍 检查 ALPHAEVO_DSA_PATH 配置..."
-          echo "  路径: $ALPHAEVO_DSA_PATH"
+          echo "🔍 检查 ALPHAEVO_DSA_PATH: $ALPHAEVO_DSA_PATH"
           if [ -d "$ALPHAEVO_DSA_PATH" ]; then
             echo "  ✅ 目录已存在"
-            echo "  内容:"
-            ls -la "$ALPHAEVO_DSA_PATH" | head -20 || echo "  (空目录)"
+            ls -la "$ALPHAEVO_DSA_PATH" | head -10 || true
           else
             echo "  ⚠️ 目录不存在，正在创建..."
             mkdir -p "$ALPHAEVO_DSA_PATH"
             echo "  ✅ 目录已创建"
-          fi
-          CACHE_FILES=$(find "$ALPHAEVO_DSA_PATH" -name "*.parquet" -o -name "*.feather" -o -name "*.csv" 2>/dev/null | wc -l)
-          echo "  缓存文件数: $CACHE_FILES"
-          if [ "$CACHE_FILES" -eq 0 ]; then
-            echo "  ⚠️ 缓存目录为空，AlphaEvo DSA 适配器将使用空缓存（可能回退到 yfinance）"
-          else
-            echo "  ✅ 缓存数据存在，AlphaEvo DSA 适配器可正常工作"
           fi
         env:
           ALPHAEVO_DSA_PATH: ${{ env.WORK_DIR }}/daily_stock_analysis/data/cache
@@ -188,21 +169,11 @@ else:
           WORK_DIR: ${{ env.WORK_DIR }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
 
-      # ========== 改进后的 TickFlow 补丁（完整分析） ==========
+      # ========== TickFlow 补丁（完整分析） ==========
       - name: 应用 TickFlow 补丁（完整分析）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
-          # 再次验证
-          python -c "
-from data_provider.tushare_fetcher import TushareFetcher
-import inspect
-print('TushareFetcher.get_daily_data 定义文件:', inspect.getfile(TushareFetcher.get_daily_data))
-if 'patch_tickflow' in inspect.getfile(TushareFetcher.get_daily_data):
-    print('✅ 补丁已生效')
-else:
-    print('⚠️ 补丁未生效，请检查')
-"
 
       # ===== 用选股结果覆盖 STOCK_LIST =====
       - name: 用选股结果覆盖 STOCK_LIST（如有）
