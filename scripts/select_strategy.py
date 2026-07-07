@@ -1,212 +1,197 @@
 #!/usr/bin/env python3
 """
-策略选择器 V3
-基于市场状态向量 + 策略因子暴露度，通过余弦相似度匹配最优策略
-数据不可用时自动降级到真实存在的保底策略
+策略选择器 v2.0
+- 双引擎评分：标签匹配度 + 因子余弦相似度 + 夏普加权
+- 标签软匹配（标准化映射）
+- 最低置信度阈值（<0.4 启用保底策略）
 """
 import os
-import sys
 import json
+import sys
+import math
 from pathlib import Path
 
-REGISTRY_PATH = os.environ.get('REGISTRY_PATH', 'strategy_registry.json')
 WORK_DIR = os.environ.get('WORK_DIR', '.')
-MARKET_STATE_FILE = os.path.join(WORK_DIR, 'daily_stock_analysis/data/market_state.json')
+REGISTRY_PATH = os.environ.get('REGISTRY_PATH', 
+                              os.path.join(WORK_DIR, 'strategy_registry.json'))
+STATE_PATH = os.path.join(WORK_DIR, 'market_state.json')
 
+# 标签标准化映射（原始 → AlphaSift 可识别）
+TAG_NORMALIZE = {
+    'value': 'value_style',
+    'growth': 'growth_style',
+    'neutral': 'neutral',
+    'value_style': 'value_style',
+    'growth_style': 'growth_style'
+}
 
-def load_market_state():
-    """加载市场状态向量"""
+# 最低匹配阈值（低于此值启用保底策略）
+MIN_SCORE_THRESHOLD = 0.4
+
+def load_json(path):
     try:
-        with open(MARKET_STATE_FILE, 'r') as f:
-            data = json.load(f)
-            if 'weights' not in data:
-                data['weights'] = {'value': 0.34, 'growth': 0.33, 'quality': 0.33}
-                data['confidence'] = 0.0
-                data['data_level'] = 3
-            return data
-    except FileNotFoundError:
-        print("⚠️ 市场状态文件不存在，使用默认均衡权重")
-        return {
-            'weights': {'value': 0.34, 'growth': 0.33, 'quality': 0.33},
-            'confidence': 0.0,
-            'data_level': 3,
-            'label': '未知'
-        }
-
-
-def load_registry():
-    """加载策略注册表"""
-    if os.path.exists(REGISTRY_PATH):
-        with open(REGISTRY_PATH, 'r') as f:
+        with open(path, 'r') as f:
             return json.load(f)
-    else:
-        print("⚠️ 注册表不存在，使用内置默认")
-        default = {
-            "strategies": [
-                {"id": "balanced_alpha", "alpha_sift_strategy": "balanced_alpha",
-                 "alphaevo_strategy": "rsi_reversion_v1", "status": "active",
-                 "factor_exposure": {"value": 0.70, "growth": 0.20, "quality": 0.10},
-                 "sharpe_ratio": 0.7, "win_rate": 0.55, "max_drawdown": 0.10},
-                {"id": "momentum_trend", "alpha_sift_strategy": "momentum_quality",
-                 "alphaevo_strategy": "trend_following", "status": "active",
-                 "factor_exposure": {"value": 0.15, "growth": 0.80, "quality": 0.05},
-                 "sharpe_ratio": 0.8, "win_rate": 0.58, "max_drawdown": 0.12},
-                {"id": "value_defensive", "alpha_sift_strategy": "value_defensive",
-                 "alphaevo_strategy": "value_mean_reversion", "status": "active",
-                 "factor_exposure": {"value": 0.90, "growth": 0.05, "quality": 0.05},
-                 "sharpe_ratio": 0.6, "win_rate": 0.52, "max_drawdown": 0.08},
-            ]
-        }
-        with open(REGISTRY_PATH, 'w') as f:
-            json.dump(default, f, indent=2)
-        return default
+    except Exception as e:
+        print(f"⚠️ 加载 {path} 失败: {e}")
+        return None
 
+def normalize_tags(raw_tags):
+    """标准化标签列表"""
+    normalized = []
+    for tag in raw_tags:
+        normalized.append(TAG_NORMALIZE.get(tag, tag))
+    return list(set(normalized))  # 去重
 
-def cosine_similarity(vec1, vec2):
-    """计算两个字典向量的余弦相似度"""
-    keys = set(vec1.keys()) & set(vec2.keys())
-    if not keys:
+def cosine_similarity(vec_a, vec_b):
+    """计算余弦相似度"""
+    # 提取三维向量
+    a = [vec_a.get('value', 0), vec_a.get('growth', 0), vec_a.get('quality', 0)]
+    b = [vec_b.get('value', 0), vec_b.get('growth', 0), vec_b.get('quality', 0)]
+    
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    
+    if norm_a == 0 or norm_b == 0:
         return 0.0
-    dot = sum(vec1[k] * vec2[k] for k in keys)
-    norm1 = sum(v ** 2 for v in vec1.values()) ** 0.5
-    norm2 = sum(v ** 2 for v in vec2.values()) ** 0.5
-    if norm1 == 0 or norm2 == 0:
+    return max(0.0, min(1.0, dot / (norm_a * norm_b)))
+
+def normalize_sharpe(sharpe):
+    """归一化夏普比率（映射到 0-1）"""
+    # 假设夏普范围 -0.5 ~ 2.0
+    normalized = (sharpe + 0.5) / 2.5
+    return max(0.0, min(1.0, normalized))
+
+def calculate_tag_match(current_tags, strategy_tags):
+    """计算标签匹配度（Jaccard 相似度）"""
+    if not strategy_tags:
+        return 0.5  # 未定义标签时给中性分
+    
+    current_set = set(normalize_tags(current_tags))
+    strategy_set = set(strategy_tags)
+    
+    if not current_set or not strategy_set:
         return 0.0
-    return dot / (norm1 * norm2)
-
-
-def normalize_sharpe(sharpe, max_sharpe=2.0, min_sharpe=-1.0):
-    """将夏普映射到0~1区间"""
-    if sharpe >= max_sharpe:
-        return 1.0
-    if sharpe <= min_sharpe:
-        return 0.0
-    return (sharpe - min_sharpe) / (max_sharpe - min_sharpe)
-
-
-def get_fallback_candidates(registry):
-    """
-    获取保底候选策略（真实存在的 AlphaSift 策略）
-    排除 baseline_etf，优先 active，其次 monitor，最后 retired
-    """
-    all_strategies = registry.get('strategies', [])
-    # 排除 baseline_etf（它是不存在的占位符）
-    real_strategies = [s for s in all_strategies if s.get('id') != 'baseline_etf']
-    if not real_strategies:
-        return []
-    # 按状态优先级排序
-    for status in ['active', 'monitor', 'retired']:
-        candidates = [s for s in real_strategies if s.get('status') == status]
-        if candidates:
-            # 按夏普降序排序
-            return sorted(candidates, key=lambda x: x.get('sharpe_ratio', -999), reverse=True)
-    # 如果没有匹配状态，返回所有真实策略（按夏普排序）
-    return sorted(real_strategies, key=lambda x: x.get('sharpe_ratio', -999), reverse=True)
-
-
-def select_strategy(market, registry):
-    """基于因子暴露度匹配选择最优策略（带数据不可用降级）"""
-    weights = market.get('weights', {'value': 0.34, 'growth': 0.33, 'quality': 0.33})
-    confidence = market.get('confidence', 0.0)
-    data_level = market.get('data_level', 1)
-
-    # ---- 数据不可用时的保底逻辑 ----
-    if data_level >= 3 or confidence < 0.3:
-        print("⚠️ 市场数据不可用（数据等级≥3或置信度<0.3），切换到保底策略")
-        fallback_list = get_fallback_candidates(registry)
-        if fallback_list:
-            best = fallback_list[0]
-            print(f"📊 保底策略: {best['id']} (夏普: {best.get('sharpe_ratio', 0):.2f})")
-            return best
-        else:
-            # 硬编码兜底：直接用 balanced_alpha（AlphaSift 必定存在）
-            print("🚨 无可用保底策略，强制使用 balanced_alpha")
-            for s in registry.get('strategies', []):
-                if s.get('id') == 'balanced_alpha':
-                    return s
-            # 极端情况：如果 balanced_alpha 不存在，随便选一个真实策略
-            for s in registry.get('strategies', []):
-                if s.get('id') != 'baseline_etf':
-                    print(f"⚠️ 使用备用策略: {s['id']}")
-                    return s
-            print("❌ 无法找到任何可用策略，退出")
-            sys.exit(1)
-
-    # ---- 正常匹配逻辑 ----
-    # 降级链：active → monitor → retired（排除 baseline_etf）
-    candidates = []
-    for status in ['active', 'monitor', 'retired']:
-        for s in registry['strategies']:
-            if s.get('status') == status and s.get('id') != 'baseline_etf':
-                candidates.append(s)
-        if candidates:
-            break
-
-    # 如果全无，使用保底
-    if not candidates:
-        print("⚠️ 无候选策略，使用保底逻辑")
-        fallback_list = get_fallback_candidates(registry)
-        if fallback_list:
-            return fallback_list[0]
-        else:
-            print("❌ 无任何可用策略，退出")
-            sys.exit(1)
-
-    # 计算综合得分
-    scored = []
-    for s in candidates:
-        exposure = s.get('factor_exposure', {})
-        for dim in ['value', 'growth', 'quality']:
-            exposure.setdefault(dim, 0.0)
-
-        sim = cosine_similarity(exposure, weights)
-        sharpe = s.get('sharpe_ratio', 0.0)
-        sharpe_norm = normalize_sharpe(sharpe)
-        combined = 0.6 * sim + 0.4 * sharpe_norm
-
-        scored.append({
-            'strategy': s,
-            'similarity': sim,
-            'sharpe_norm': sharpe_norm,
-            'combined': combined
-        })
-
-    scored.sort(key=lambda x: x['combined'], reverse=True)
-    best = scored[0]['strategy']
-
-    # 输出选择结果
-    print(f"📊 市场状态: {market.get('label', '未知')} (置信度: {market.get('confidence', 0):.2f})")
-    print(f"   权重向量: 价值={weights['value']:.2f}, 成长={weights['growth']:.2f}, 质量={weights['quality']:.2f}")
-    print(f"🎯 选定策略: {best['id']}")
-    print(f"   综合得分: {scored[0]['combined']:.3f} (相似度: {scored[0]['similarity']:.3f}, 夏普贡献: {scored[0]['sharpe_norm']:.3f})")
-    print(f"   AlphaSift: {best.get('alpha_sift_strategy', best['id'])}")
-    print(f"   AlphaEvo: {best.get('alphaevo_strategy', 'default')}")
-
-    return best
-
+    
+    intersection = len(current_set & strategy_set)
+    union = len(current_set | strategy_set)
+    
+    return intersection / union if union > 0 else 0.0
 
 def main():
-    market = load_market_state()
-    registry = load_registry()
-    selected = select_strategy(market, registry)
-
-    # 写入 GITHUB_OUTPUT
-    github_output = os.environ.get('GITHUB_OUTPUT')
-    if github_output:
-        with open(github_output, 'a') as f:
-            f.write(f"selected_strategy={selected['id']}\n")
-            f.write(f"alpha_sift_strategy={selected.get('alpha_sift_strategy', selected['id'])}\n")
-            f.write(f"alphaevo_strategy={selected.get('alphaevo_strategy', 'default')}\n")
-            f.write(f"market_label={market.get('label', '未知')}\n")
-            f.write(f"market_confidence={market.get('confidence', 0)}\n")
-            f.write(f"market_data_level={market.get('data_level', 1)}\n")
-
-    # 状态警告
-    if selected.get('status') == 'monitor':
-        print(f"⚠️ 策略处于 monitor 状态: {selected.get('retire_reason', '')}")
-    elif selected.get('status') == 'retired':
-        print(f"🚨 策略处于 retired 状态（兜底选择）: {selected.get('retire_reason', '')}")
-
+    print("🎯 策略选择器 v2.0 启动...")
+    
+    # 1. 加载市场状态
+    state = load_json(STATE_PATH)
+    if not state:
+        print("❌ 无法加载 market_state.json，退出")
+        sys.exit(1)
+    
+    current_tags = state.get('tags', ['neutral'])
+    state_vec = state.get('state_vec', {'value': 0.33, 'growth': 0.33, 'quality': 0.34})
+    confidence = state.get('confidence', 0.5)
+    fallback_strategy = state.get('fallback_strategy', 'balanced_alpha')
+    fallback_alphaevo = state.get('fallback_alphaevo', 'rsi_reversion_v1')
+    
+    print(f"  ├─ 当前标签: {current_tags}")
+    print(f"  ├─ 状态向量: value={state_vec.get('value', 0):.2f}, "
+          f"growth={state_vec.get('growth', 0):.2f}, "
+          f"quality={state_vec.get('quality', 0):.2f}")
+    print(f"  ├─ 数据置信度: {confidence}")
+    
+    # 2. 加载策略注册表
+    registry = load_json(REGISTRY_PATH)
+    if not registry:
+        print("❌ 无法加载策略注册表，退出")
+        sys.exit(1)
+    
+    strategies = registry.get('strategies', [])
+    if not strategies:
+        print("❌ 策略注册表为空，退出")
+        sys.exit(1)
+    
+    # 3. 计算每个策略的得分
+    scored = []
+    for s in strategies:
+        # 3.1 标签匹配度
+        strategy_tags = s.get('market_regime', [])
+        tag_score = calculate_tag_match(current_tags, strategy_tags)
+        
+        # 3.2 因子余弦相似度
+        factor_exp = s.get('factor_exposure', {'value': 0.33, 'growth': 0.33, 'quality': 0.34})
+        cosine_score = cosine_similarity(state_vec, factor_exp)
+        
+        # 3.3 夏普归一化
+        sharpe = s.get('sharpe_ratio', 0.5)
+        sharpe_score = normalize_sharpe(sharpe)
+        
+        # 3.4 综合评分（权重可调）
+        # 标签匹配 50% + 余弦相似度 30% + 夏普 20%
+        final_score = 0.5 * tag_score + 0.3 * cosine_score + 0.2 * sharpe_score
+        
+        scored.append({
+            'id': s.get('id'),
+            'alpha_sift_strategy': s.get('alpha_sift_strategy'),
+            'alphaevo_strategy': s.get('alphaevo_strategy'),
+            'score': final_score,
+            'tag_score': tag_score,
+            'cosine_score': cosine_score,
+            'sharpe_score': sharpe_score,
+            'status': s.get('status', 'active'),
+            'factor_exposure': factor_exp
+        })
+    
+    # 4. 按得分排序
+    scored.sort(key=lambda x: x['score'], reverse=True)
+    
+    # 5. 检查最高得分是否低于阈值
+    best = scored[0]
+    print(f"  ├─ 最高得分: {best['score']:.4f} ({best['id']})")
+    
+    if best['score'] < MIN_SCORE_THRESHOLD:
+        print(f"  ├─ ⚠️ 最高得分 {best['score']:.4f} < {MIN_SCORE_THRESHOLD}，启用保底策略")
+        # 从注册表中查找保底策略
+        fallback = None
+        for s in strategies:
+            if s.get('id') == fallback_strategy:
+                fallback = s
+                break
+        if fallback:
+            best = {
+                'id': fallback.get('id'),
+                'alpha_sift_strategy': fallback.get('alpha_sift_strategy'),
+                'alphaevo_strategy': fallback.get('alphaevo_strategy'),
+                'score': 0.5,
+                'tag_score': 0.5,
+                'cosine_score': 0.5,
+                'sharpe_score': 0.5,
+                'status': fallback.get('status', 'active'),
+                'factor_exposure': fallback.get('factor_exposure', {})
+            }
+            print(f"  │  └─ 保底策略: {best['id']}")
+        else:
+            print(f"  │  └─ ⚠️ 保底策略 {fallback_strategy} 未找到，使用第一个可用策略")
+    
+    # 6. 输出结果
+    print(f"  └─ ✅ 选中策略: {best['id']}")
+    print(f"     AlphaSift: {best['alpha_sift_strategy']}")
+    print(f"     AlphaEvo: {best['alphaevo_strategy']}")
+    print(f"     factor_exposure: {best['factor_exposure']}")
+    
+    # 7. 写入 GitHub Actions 输出
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f"selected_strategy={best['id']}\n")
+            f.write(f"alpha_sift_strategy={best['alpha_sift_strategy']}\n")
+            f.write(f"alphaevo_strategy={best['alphaevo_strategy']}\n")
+            f.write(f"selection_score={best['score']:.4f}\n")
+    else:
+        # 本地测试
+        result_path = Path(WORK_DIR) / 'selected_strategy.json'
+        with open(result_path, 'w') as f:
+            json.dump(best, f, indent=2)
+        print(f"✅ 选择结果已保存到: {result_path}")
 
 if __name__ == '__main__':
     main()

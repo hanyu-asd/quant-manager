@@ -1,13 +1,30 @@
-# 市场状态感知参数配置
-threshold: 0.03              # 风格差阈值（3%）
-discount: 0.7                # 方向不一致时的置信度折扣
-min_amplitude: 1.0           # 最小幅度（%）
-window_short: 20             # 短期窗口（日）
-window_long: 60              # 长期窗口（日）
+# 市场状态感知配置（相对分位数法）
+rolling_window: 60                # 历史回看窗口
+percentile_threshold: 70          # 分位数阈值（>70% 视为触发）
+confidence_required: 0.6          # 置信度低于此值启用降级模式
 
-# 数据降级链
-index_pairs:
-  - value_code: "000922"     # 中证红利（首选）
-    growth_code: "000688"    # 科创50（首选）
-  - value_code: "000300"     # 沪深300（备选）
-    growth_code: "399006"    # 创业板指（备选）
+# 各维度权重（用于置信度计算）
+data_source_weights:
+  index: 0.4                      # 指数日线
+  breadth: 0.3                    # 涨跌家数
+  sector: 0.2                     # 板块轮动
+  style: 0.1                      # 风格指数
+
+# 保底策略
+fallback_strategy: balanced_alpha
+fallback_alphaevo: rsi_reversion_v1
+
+# 指数代码（TickFlow 格式）
+indices:
+  sh: "000001.SH"                 # 上证指数
+  sz: "399001.SZ"                 # 深证成指
+  cyb: "399006.SZ"                # 创业板指
+  hs300: "000300.SH"              # 沪深300
+  value: "000029.SH"              # 上证180价值（风格判断）
+  growth: "000030.SH"             # 上证180成长（风格判断）
+
+# 标签标准化映射（原始输出 → AlphaSift 可识别）
+label_mapping:
+  value: value_style
+  growth: growth_style
+  neutral: neutral

@@ -1,80 +1,139 @@
 {
   "strategies": [
     {
-      "id": "balanced_alpha",
+      "id": "alpha_balanced",
       "alpha_sift_strategy": "balanced_alpha",
       "alphaevo_strategy": "rsi_reversion_v1",
-      "status": "active",
+      "market_regime": [ "neutral", "rotation" ],
       "factor_exposure": {
         "value": 0.70,
         "growth": 0.20,
         "quality": 0.10
       },
-      "deployed_date": "2026-01-01",
-      "last_evaluated": null,
-      "sharpe_ratio": 0.7,
+      "status": "active",
+      "sharpe_ratio": 0.70,
       "win_rate": 0.55,
-      "max_drawdown": 0.10,
-      "performance_trend": [],
-      "evolution_count": 0,
-      "retire_reason": null
+      "max_drawdown": 0.10
     },
     {
-      "id": "momentum_trend",
+      "id": "alpha_momentum",
       "alpha_sift_strategy": "momentum_quality",
       "alphaevo_strategy": "rsi_reversion_v1",
-      "status": "active",
+      "market_regime": [ "risk_on", "trend", "rotation" ],
       "factor_exposure": {
         "value": 0.15,
         "growth": 0.80,
         "quality": 0.05
       },
-      "deployed_date": "2026-01-01",
-      "last_evaluated": null,
-      "sharpe_ratio": 0.8,
+      "status": "active",
+      "sharpe_ratio": 0.80,
       "win_rate": 0.58,
-      "max_drawdown": 0.12,
-      "performance_trend": [],
-      "evolution_count": 0,
-      "retire_reason": null
+      "max_drawdown": 0.12
     },
     {
-      "id": "value_defensive",
-      "alpha_sift_strategy": "value_defensive",
+      "id": "alpha_dual_low",
+      "alpha_sift_strategy": "dual_low",
       "alphaevo_strategy": "rsi_reversion_v1",
-      "status": "active",
+      "market_regime": [ "risk_off", "range_bound" ],
       "factor_exposure": {
         "value": 0.90,
         "growth": 0.05,
         "quality": 0.05
       },
-      "deployed_date": "2026-01-01",
-      "last_evaluated": null,
-      "sharpe_ratio": 0.6,
-      "win_rate": 0.52,
-      "max_drawdown": 0.08,
-      "performance_trend": [],
-      "evolution_count": 0,
-      "retire_reason": null
+      "status": "active",
+      "sharpe_ratio": 0.55,
+      "win_rate": 0.50,
+      "max_drawdown": 0.08
     },
     {
-      "id": "oversold_rebound",
-      "alpha_sift_strategy": "oversold_rebound",
+      "id": "alpha_capital_heat",
+      "alpha_sift_strategy": "capital_heat",
       "alphaevo_strategy": "rsi_reversion_v1",
+      "market_regime": [ "risk_on", "high_liquidity" ],
+      "factor_exposure": {
+        "value": 0.05,
+        "growth": 0.70,
+        "quality": 0.25
+      },
       "status": "active",
+      "sharpe_ratio": 0.55,
+      "win_rate": 0.52,
+      "max_drawdown": 0.14
+    },
+    {
+      "id": "alpha_lowvol",
+      "alpha_sift_strategy": "low_volatility_quality",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "market_regime": [ "risk_off", "low_vol" ],
+      "factor_exposure": {
+        "value": 0.60,
+        "growth": 0.10,
+        "quality": 0.30
+      },
+      "status": "active",
+      "sharpe_ratio": 0.65,
+      "win_rate": 0.53,
+      "max_drawdown": 0.06
+    },
+    {
+      "id": "alpha_quality_value",
+      "alpha_sift_strategy": "quality_value",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "market_regime": [ "neutral", "value_style" ],
+      "factor_exposure": {
+        "value": 0.70,
+        "growth": 0.10,
+        "quality": 0.20
+      },
+      "status": "active",
+      "sharpe_ratio": 0.65,
+      "win_rate": 0.54,
+      "max_drawdown": 0.09
+    },
+    {
+      "id": "alpha_bluechip",
+      "alpha_sift_strategy": "blue_chip_income",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "market_regime": [ "risk_off", "range_bound", "value_style" ],
+      "factor_exposure": {
+        "value": 0.80,
+        "growth": 0.05,
+        "quality": 0.15
+      },
+      "status": "active",
+      "sharpe_ratio": 0.60,
+      "win_rate": 0.52,
+      "max_drawdown": 0.07
+    },
+    {
+      "id": "alpha_oversold",
+      "alpha_sift_strategy": "oversold_reversal",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "market_regime": [ "range_bound", "low_vol" ],
       "factor_exposure": {
         "value": 0.10,
         "growth": 0.60,
         "quality": 0.30
       },
-      "deployed_date": "2026-01-01",
-      "last_evaluated": null,
-      "sharpe_ratio": 0.5,
+      "status": "active",
+      "sharpe_ratio": 0.50,
       "win_rate": 0.50,
-      "max_drawdown": 0.15,
-      "performance_trend": [],
-      "evolution_count": 0,
-      "retire_reason": null
+      "max_drawdown": 0.15
+    },
+    {
+      "id": "alpha_volume_breakout",
+      "alpha_sift_strategy": "volume_breakout",
+      "alphaevo_strategy": "rsi_reversion_v1",
+      "market_regime": [ "risk_on", "high_liquidity", "trend" ],
+      "factor_exposure": {
+        "value": 0.10,
+        "growth": 0.75,
+        "quality": 0.15
+      },
+      "status": "active",
+      "sharpe_ratio": 0.58,
+      "win_rate": 0.53,
+      "max_drawdown": 0.13
     }
   ]
 }

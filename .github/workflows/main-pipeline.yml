@@ -25,6 +25,10 @@ jobs:
         run: |
           pip install tickflow tushare pandas pyyaml
 
+      - name: 复制市场状态配置文件
+        run: |
+          cp market_regime_config.yaml $WORK_DIR/market_regime_config.yaml
+
       - name: 拉取/更新项目代码
         run: |
           chmod +x scripts/update_projects.sh
@@ -64,16 +68,14 @@ jobs:
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 新增：市场状态感知（生成权重向量） -----
-      - name: 市场状态感知
+      - name: 市场状态感知（v2.0 相对分位数法）
         run: |
           python scripts/market_regime.py
         env:
           WORK_DIR: ${{ env.WORK_DIR }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
 
-      # ----- 策略选择（基于因子匹配） -----
-      - name: 策略自动选择
+      - name: 策略自动选择（v2.0 标签软匹配 + 置信度门禁）
         id: select_strategy
         run: |
           python scripts/select_strategy.py
@@ -81,7 +83,6 @@ jobs:
           WORK_DIR: ${{ env.WORK_DIR }}
           REGISTRY_PATH: ${{ env.REGISTRY_PATH }}
 
-      # ----- AlphaSift 选股 -----
       - name: AlphaSift 选股
         run: |
           cd $WORK_DIR/alphasift
@@ -106,7 +107,6 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ----- AlphaEvo 回测，优先使用 dsa 适配器 -----
       - name: AlphaEvo 回测验证
         id: alphaevo_backtest
         env:
@@ -116,7 +116,6 @@ jobs:
           mkdir -p data reports
           STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
           echo "AlphaEvo 使用策略: $STRATEGY"
-          # 优先使用 dsa（读取 daily_stock_analysis 缓存），失败则降级 yfinance
           if alphaevo run "$STRATEGY" --adapter dsa --output reports/ 2>/dev/null; then
             echo "✅ AlphaEvo 回测成功 (DSA 缓存数据)"
             echo "backtest_success=true" >> $GITHUB_OUTPUT
@@ -128,7 +127,6 @@ jobs:
             echo "backtest_success=false" >> $GITHUB_OUTPUT
           fi
 
-      # ----- 解析回测报告（无论成败都执行，生成默认绩效） -----
       - name: 解析回测报告
         run: |
           python scripts/parse_alphaevo_report.py
@@ -136,7 +134,6 @@ jobs:
           WORK_DIR: ${{ env.WORK_DIR }}
           STRATEGY_ID: ${{ steps.select_strategy.outputs.selected_strategy }}
 
-      # ----- 更新策略注册表（回写绩效） -----
       - name: 更新策略注册表
         run: |
           python scripts/update_strategy_registry.py
@@ -145,7 +142,6 @@ jobs:
           REGISTRY_PATH: ${{ env.REGISTRY_PATH }}
           STRATEGY_ID: ${{ steps.select_strategy.outputs.selected_strategy }}
 
-      # ----- 定价计算器（T+1 买入适配） -----
       - name: 定价计算器
         run: |
           python scripts/pricing_calculator.py
@@ -153,7 +149,6 @@ jobs:
           WORK_DIR: ${{ env.WORK_DIR }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
 
-      # ----- 应用 TickFlow 补丁（完整分析） -----
       - name: 应用 TickFlow 补丁（完整分析）
         run: |
           cd $WORK_DIR/daily_stock_analysis
@@ -167,7 +162,6 @@ jobs:
         env:
           ALPHASIFT_ENABLED: false
 
-      # ----- 条件触发：策略进化（周五/月首/事件） -----
       - name: 判断是否运行 AlphaEvo 进化
         id: check_evo
         run: |
@@ -188,12 +182,10 @@ jobs:
           MONITOR_STRATEGY="${{ steps.check_evo.outputs.monitor_strategy }}"
           DOM=$(date +%d)
           if [ -n "$MONITOR_STRATEGY" ]; then
-            # 事件触发：对 monitor 策略进行进化（使用 AlphaEvo 策略名）
             alphaevo evolve "$MONITOR_STRATEGY" --method llm || echo "⚠️ 进化失败"
           elif [ "$DOM" = "01" ]; then
             alphaevo optimize --full-scan || echo "⚠️ 优化失败，跳过"
           else
-            # 周五轻量进化：对当前使用的策略进行进化（使用 AlphaEvo 策略名）
             STRATEGY="${{ steps.select_strategy.outputs.alphaevo_strategy }}"
             alphaevo evolve "$STRATEGY" --method llm || echo "⚠️ 进化失败，跳过"
           fi
