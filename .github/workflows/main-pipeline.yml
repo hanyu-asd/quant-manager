@@ -59,10 +59,21 @@ jobs:
           echo "EMAIL_RECEIVERS=${{ secrets.EMAIL_RECEIVERS }}" >> .env
           echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
 
+      # ========== 改进后的 TickFlow 补丁（大盘复盘） ==========
       - name: 应用 TickFlow 补丁（大盘复盘）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
+          # 验证补丁是否生效
+          python -c "
+from data_provider.tushare_fetcher import TushareFetcher
+import inspect
+print('TushareFetcher.get_daily_data 定义文件:', inspect.getfile(TushareFetcher.get_daily_data))
+if 'patch_tickflow' in inspect.getfile(TushareFetcher.get_daily_data):
+    print('✅ 补丁已生效')
+else:
+    print('⚠️ 补丁未生效，请检查')
+"
 
       - name: 大盘复盘（生成今日信号）
         run: |
@@ -110,7 +121,7 @@ jobs:
         env:
           ALPHASIFT_ENABLED: true
 
-      # ===== 新增：确认 ALPHAEVO_DSA_PATH 配置 =====
+      # ===== 确认 ALPHAEVO_DSA_PATH 配置 =====
       - name: 确认 ALPHAEVO_DSA_PATH 配置
         run: |
           echo "🔍 检查 ALPHAEVO_DSA_PATH 配置..."
@@ -124,7 +135,6 @@ jobs:
             mkdir -p "$ALPHAEVO_DSA_PATH"
             echo "  ✅ 目录已创建"
           fi
-          # 检查是否有缓存数据（用于诊断）
           CACHE_FILES=$(find "$ALPHAEVO_DSA_PATH" -name "*.parquet" -o -name "*.feather" -o -name "*.csv" 2>/dev/null | wc -l)
           echo "  缓存文件数: $CACHE_FILES"
           if [ "$CACHE_FILES" -eq 0 ]; then
@@ -178,11 +188,23 @@ jobs:
           WORK_DIR: ${{ env.WORK_DIR }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
 
+      # ========== 改进后的 TickFlow 补丁（完整分析） ==========
       - name: 应用 TickFlow 补丁（完整分析）
         run: |
           cd $WORK_DIR/daily_stock_analysis
           python $GITHUB_WORKSPACE/scripts/patch_tickflow.py
+          # 再次验证
+          python -c "
+from data_provider.tushare_fetcher import TushareFetcher
+import inspect
+print('TushareFetcher.get_daily_data 定义文件:', inspect.getfile(TushareFetcher.get_daily_data))
+if 'patch_tickflow' in inspect.getfile(TushareFetcher.get_daily_data):
+    print('✅ 补丁已生效')
+else:
+    print('⚠️ 补丁未生效，请检查')
+"
 
+      # ===== 用选股结果覆盖 STOCK_LIST =====
       - name: 用选股结果覆盖 STOCK_LIST（如有）
         run: |
           cd $WORK_DIR/daily_stock_analysis
